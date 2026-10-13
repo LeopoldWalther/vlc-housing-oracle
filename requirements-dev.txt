@@ -1,0 +1,6 @@
+# Development tooling: not needed to run a rebuild, needed to check one.
+#
+# Pinned exactly on purpose: ruff's default rule set grows between releases, so an unpinned linter
+# fails CI on a day nobody changed the code. tests/test_tooling_pins.py asserts this pin and the one
+# the CI workflow installs cannot drift apart.
+ruff==0.16.8

@@ -1,0 +1,166 @@
+# Example technical plan — illustrative only.
+#
+# The `reviewer` emits one of these per feature at
+# dev/plans/technical/FEATURE-XXX-technical-plan.yaml. This sample shows the expected shape; it is
+# intentionally generic. `for_feature` here does not match a real FEATURE-NNN, so the consistency
+# checker skips it. Copy this structure and adapt the paths to your project when planning a feature.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-001-example"
+    created_by: "reviewer_agent"
+    created_at: "2026-01-01"
+    version: "2.0"
+    total_tasks: 3
+    estimated_hours: "3-4"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3"]
+    feature_plan: "dev/plans/FEATURE-001-example.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-001.md"
+
+  validation:
+    required_checks:
+      - "workflow-consistency"
+    # Set a numeric threshold only when repository configuration or the approved plan defines one.
+    min_coverage: null
+    baseline_commands:
+      - "python dev/tools/validate_workflow.py"
+    final_commands:
+      - "PYTHONPATH=src python -m unittest discover -s tests -v"
+      - "PYTHONPATH=src python -m doctest README.md"
+      - "python dev/tools/validate_workflow.py"
+
+  tasks:
+    - id: "1.1"
+      title: "Normalize one listing identifier"
+      description: |
+        Define the smallest public behavior for converting a source listing identifier into its
+        canonical non-empty string form.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: []
+      branch: "feature/example-utility/1.1-normalize-id"
+      commit_message: "feat(example): normalize listing identifiers"
+      acceptance_criteria:
+        - "`normalize_listing_id` trims surrounding whitespace from a non-empty identifier"
+        - "A blank identifier raises `ValueError`"
+        - "The public function is typed and documents its behavioral contract"
+      tdd:
+        red:
+          test_file: "tests/test_listing_id.py"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+          expected_failure: "Import fails because `normalize_listing_id` does not exist yet"
+        green:
+          behavior: "Implement the smallest pure function that satisfies both identifier cases"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+        refactor:
+          rule: "Improve names or structure only if the green implementation demonstrates a need"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+      validation_commands:
+        - "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+      allowed_files:
+        - "src/example/__init__.py"
+        - "src/example/core.py"
+        - "tests/test_listing_id.py"
+      forbidden_files: []
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; this task has no persisted-data or infrastructure effect"
+      files_to_create:
+        - "src/example/__init__.py"
+        - "src/example/core.py"
+        - "tests/test_listing_id.py"
+      files_to_modify: []
+
+    - id: "1.2"
+      title: "Normalize a batch without duplicates"
+      description: |
+        Compose the single-value behavior to normalize a batch while preserving first-seen order
+        and removing duplicate canonical identifiers.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.1"]
+      branch: "feature/example-utility/1.2-normalize-batch"
+      commit_message: "feat(example): normalize listing identifier batches"
+      acceptance_criteria:
+        - "Batch normalization preserves the first-seen order of canonical identifiers"
+        - "Duplicate canonical identifiers occur once in the result"
+        - "Batch normalization composes the single-identifier behavior without a new class"
+      tdd:
+        red:
+          test_file: "tests/test_listing_id.py"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+          expected_failure: "The new batch-normalization test fails because the behavior is absent"
+        green:
+          behavior: "Compose `normalize_listing_id` and remove duplicates in first-seen order"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+        refactor:
+          rule: "Remove duplication only if a shared concept is present; add no speculative interface"
+          command: "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+      validation_commands:
+        - "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+      allowed_files:
+        - "src/example/__init__.py"
+        - "src/example/core.py"
+        - "tests/test_listing_id.py"
+      forbidden_files:
+        - "README.md"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; this task has no persisted-data or infrastructure effect"
+      files_to_create: []
+      files_to_modify:
+        - "src/example/__init__.py"
+        - "src/example/core.py"
+        - "tests/test_listing_id.py"
+
+    - id: "1.3"
+      title: "Document usage"
+      description: |
+        Add a short README section with runnable examples once behaviour is stable.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["1.2"]
+      branch: "feature/example-utility/1.3-docs"
+      commit_message: "docs(example): add usage section"
+      acceptance_criteria:
+        - "README documents single and batch normalization with concise interactive examples"
+        - "The documented examples execute successfully as doctests"
+      tdd: null
+      validation_commands:
+        - "PYTHONPATH=src python -m doctest README.md"
+        - "PYTHONPATH=src python -m unittest discover -s tests -p 'test_listing_id.py' -v"
+      allowed_files:
+        - "README.md"
+      forbidden_files: []
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the documentation commit"
+      files_to_create: []
+      files_to_modify:
+        - "README.md"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/example-utility"
+    task_branch_strategy: |
+      Create the integration branch from base_branch. A task without dependencies starts from the
+      integration branch; a dependent task starts after its dependencies are integrated.
+    integration_strategy: |
+      After explicit user approval, merge verified task branches into integration_branch in
+      dependency order without rewriting history, then run validation.final_commands there.
+    commit_strategy: "One focused commit per task"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "fix", "test", "docs", "refactor", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval"
+    final_pr_title: "feat(example): <one-line summary of the task>"
+    final_pr_description: |
+      Implements FEATURE-001. See dev/reviews/REVIEW-FEATURE-001.md for context.
+
+  notes:
+    - "Generic sample for the template — replace paths and scopes with your project's."
+    - "Keep metadata.total_tasks equal to the number of entries under tasks."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

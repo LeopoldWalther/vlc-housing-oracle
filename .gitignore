@@ -1,0 +1,142 @@
+# macOS and filesystem metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# Editors and local workspace settings
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# Local AI/chat exports
+/conversation.txt
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+
+# Python environments and packaging
+.venv/
+venv/
+env/
+ENV/
+.tox/
+.nox/
+build/
+dist/
+site/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+coverage/
+.cache/
+
+# Jupyter-generated files
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Environment files, credentials, and private keys
+.env
+.env.*
+!.env.example
+!.env.*.example
+/.aws/
+/.secrets/
+/secrets/
+/credentials.json
+/service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Terraform local state, plans, and overrides
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+!*.tfvars.example
+!*.tfvars.example.json
+.terraform.tfstate.lock.info
+.terraformrc
+terraform.rc
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+tfplan
+plan.out
+
+# Keep Terraform dependency locks in version control.
+!.terraform.lock.hcl
+
+# Raw downloads and local lakehouse/catalog data
+/data/*
+!/data/.gitkeep
+/warehouse/
+/spark-warehouse/
+/metastore_db/
+/derby.log
+
+# Local analytics and model-training runs
+/mlruns/
+/.mlflow/
+/wandb/
+/lightning_logs/
+/.dvc/cache/
+
+# JavaScript dependencies and generated frontend output
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.parcel-cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Cloud and deployment build output
+.aws-sam/
+.serverless/
+cdk.out/
+
+# Runtime and temporary files
+*.log
+*.pid
+*.pid.lock
+tmp/
+temp/

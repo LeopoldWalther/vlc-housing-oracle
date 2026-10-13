@@ -1,0 +1,56 @@
+# Every command here is character-for-character the command a developer runs locally, so a red run
+# is reproducible without reading this file. No secret is used and no cloud resource is touched:
+# the test suite runs on synthetic data.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests, workflow consistency and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Every check runs even when an earlier one failed, so one push reports everything that is
+      # wrong. `!cancelled()` rather than `always()`, so stopping a run actually stops it.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v
+
+      # The repository is public: nothing may name the private data source, its provider, storage
+      # or account. Terms are checked by digest, see dev/tools/check_leaks.py.
+      - name: Leak guard
+        if: ${{ !cancelled() }}
+        run: python dev/tools/check_leaks.py
+
+      - name: Workflow consistency
+        if: ${{ !cancelled() }}
+        run: python dev/tools/validate_workflow.py
+
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: ruff check src tests dev
+
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: ruff format --check src tests dev
