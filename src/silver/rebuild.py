@@ -8,6 +8,7 @@ import pyarrow as pa
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
 TRANSFORMATION_VERSION = "silver-v1"
+REDACTION_VERSION = "r1"
 
 # In dependency order: a statement may read the silver_<table> of any table listed before it.
 SILVER_TABLES = ("walk", "observation", "listing", "listing_text")
@@ -25,6 +26,8 @@ def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
     """
     connection.execute("SET TimeZone = 'UTC'")
     connection.execute(f"SET VARIABLE transformation_version = '{TRANSFORMATION_VERSION}'")
+    connection.execute(f"SET VARIABLE redaction_version = '{REDACTION_VERSION}'")
+    connection.execute(_statement("redact"))
     for name in SHARED_VIEWS:
         connection.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS {_statement(name)}")
     tables: dict[str, pa.Table] = {}

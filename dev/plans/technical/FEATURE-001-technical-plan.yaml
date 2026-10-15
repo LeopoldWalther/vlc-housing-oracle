@@ -463,7 +463,7 @@ technical_plan:
         `\b(Sr|Sra|Srta|Don|Doña|Dña)\.?\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+` with `[name]`. build_tables creates
         it before the table statements; listing_text.sql applies it to description and adds
         redaction_version = 'r1'. Titles, location and features stay verbatim.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["2.5"]
