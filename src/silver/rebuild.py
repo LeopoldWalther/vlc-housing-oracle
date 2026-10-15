@@ -10,7 +10,7 @@ SQL_DIR = Path(__file__).resolve().parent / "sql"
 TRANSFORMATION_VERSION = "silver-v1"
 
 # In dependency order: a statement may read the silver_<table> of any table listed before it.
-SILVER_TABLES = ("walk",)
+SILVER_TABLES = ("walk", "observation")
 
 
 def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
