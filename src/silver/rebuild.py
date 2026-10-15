@@ -1,17 +1,24 @@
-"""Rebuild Silver from landing v1: DuckDB SQL computes the tables, Iceberg stores them."""
+"""Rebuild Silver from landing v1: DuckDB SQL computes the tables, Iceberg stores them.
 
-from collections.abc import Callable
+Run from the repository root::
+
+    python -m src.silver.rebuild --landing <local landing/v1 directory> --catalog <name>
+"""
+
+import argparse
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 import pyarrow as pa
-from pyiceberg.catalog import Catalog
+from pyiceberg.catalog import Catalog, load_catalog
 
 from src.contracts import landing_v1_sha256
-from src.silver.landing import register_landing
-from src.silver.sink import write_silver_tables
+from src.silver.landing import LandingContractError, register_landing
+from src.silver.sink import SilverSchemaError, write_silver_tables
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -85,3 +92,39 @@ def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
 
 def _statement(name: str) -> str:
     return (SQL_DIR / f"{name}.sql").read_text(encoding="utf-8")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Rebuild Silver once; exit 0 on success, 1 when landing or a table schema is refused."""
+    parser = argparse.ArgumentParser(
+        prog="python -m src.silver.rebuild", description="Rebuild Silver from landing v1."
+    )
+    parser.add_argument(
+        "--landing", type=Path, required=True, help="local directory holding landing/v1 tables"
+    )
+    parser.add_argument(
+        "--catalog",
+        required=True,
+        help="PyIceberg catalog name, configured in ~/.pyiceberg.yaml or PYICEBERG_CATALOG__* "
+        "environment variables",
+    )
+    arguments = parser.parse_args(argv)
+    if not arguments.landing.is_dir():
+        parser.error(f"--landing {arguments.landing} is not a directory")
+
+    catalog = load_catalog(arguments.catalog)
+    with duckdb.connect() as connection:
+        try:
+            result = rebuild(
+                connection, catalog, landing=arguments.landing, now=lambda: datetime.now(UTC)
+            )
+        except (LandingContractError, SilverSchemaError) as error:
+            print(f"Silver rebuild refused: {error}", file=sys.stderr)
+            return 1
+    for table in SILVER_TABLES:
+        print(f"{table}: {result.row_counts[table]} rows, snapshot {result.snapshot_ids[table]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
