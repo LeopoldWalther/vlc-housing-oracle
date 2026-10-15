@@ -99,7 +99,7 @@ technical_plan:
         provides `write_landing_tables(directory, rows_by_table)`, which writes
         `<directory>/<table>.parquet` via a typed DuckDB SELECT built from the contract, with absent
         columns NULL. Adds `duckdb==1.5.6` to requirements.txt and removes `src/.gitkeep`.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
