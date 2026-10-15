@@ -416,7 +416,7 @@ technical_plan:
         source_listing_id, observed_at, ingested_at, title, location, description, features verbatim,
         plus transformation_version. Pairing is already guaranteed by task 2.1 (review M2), so no
         error path is added here. Ordered by source_listing_id.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["2.4"]
