@@ -520,7 +520,7 @@ technical_plan:
         `current_snapshot().snapshot_id` after its commit. Adds
         `pyiceberg[pyarrow,sql-sqlite,glue]==0.12.0` to requirements.txt. Tests use a SqlCatalog on
         SQLite in a temporary directory.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2"]
