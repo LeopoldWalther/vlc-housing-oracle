@@ -364,7 +364,7 @@ technical_plan:
         area columns (area, operation, municipality, district) (L2); a detail-only listing has null
         seen columns. No title, description, location or features column. Ordered by
         source_listing_id.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["2.3"]
