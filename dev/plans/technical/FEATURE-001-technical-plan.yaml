@@ -669,7 +669,7 @@ technical_plan:
         CI gains a `terraform-validate` job using hashicorp/setup-terraform with
         terraform_version 1.14.6 and running exactly the command in final_commands. No apply happens
         in this task; the operator applies after merge.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.5
       depends_on: []

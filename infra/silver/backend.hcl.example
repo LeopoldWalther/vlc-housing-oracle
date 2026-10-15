@@ -1,0 +1,2 @@
+# Copy to backend.tfvars (ignored by git) and fill in. Never commit the real value.
+bucket = "<terraform-state-bucket>"
