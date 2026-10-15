@@ -309,7 +309,7 @@ technical_plan:
         district ASC NULLS FIRST, operation ASC, observed_at ASC, ingested_at ASC NULLS LAST.
         Keeps every contract column of the chosen row plus transformation_version; ordered by
         (source_listing_id, observed_date).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["2.2"]
