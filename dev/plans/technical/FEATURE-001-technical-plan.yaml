@@ -262,7 +262,7 @@ technical_plan:
         `src/silver/sql/<table>.sql` files over the registered views. `walk.sql` keeps every contract
         column unchanged, adds `transformation_version = 'silver-v1'`, and orders by
         (area, run_started_at). Tests use write_landing_tables fixtures, not the generator.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["2.1"]
