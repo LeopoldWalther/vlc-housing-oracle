@@ -1,2 +1,2 @@
-# Runtime dependencies for the modules under src/. Empty until the first feature needs one: the
-# workflow tooling under dev/ uses the standard library only.
+# Runtime dependencies for the modules under src/, pinned exactly so a rebuild is reproducible.
+duckdb==1.5.6
