@@ -52,7 +52,7 @@ technical_plan:
         repository and pin its SHA-256. Write a public `contracts/landing/v1/README.md`: grain and
         meaning of each table, what landing does not do (dedupe, newest record, events, redaction),
         and the rule that a change is `landing/v2`. Name no source, provider, bucket or private path.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: []
