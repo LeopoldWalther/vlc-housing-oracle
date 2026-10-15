@@ -1,6 +1,6 @@
 # FEATURE-001 — Silver on Iceberg against landing/v1
 
-**Status:** 🔵 Planned · **Effort:** L (~16-20h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** L (~16-20h) · **Priority:** High
 **Branch root:** `feature/silver-rebuild` · **Created:** 2026-10-14 · **Updated:** 2026-10-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-001.md`).
