@@ -213,7 +213,7 @@ technical_plan:
           and listing_text (source, area, source_listing_id, observed_at);
         - listing_detail and listing_text keys match one to one.
         Messages name the table, the columns or key, and a count; never values.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2"]
