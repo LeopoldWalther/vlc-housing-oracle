@@ -572,7 +572,7 @@ technical_plan:
         redaction_version, landing_contract_sha256 (from src/contracts.py) and rebuild_started_at
         (now(), ISO-8601 UTC). RebuildResult is a frozen dataclass mapping table -> row count and
         table -> snapshot id.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.3", "2.6", "3.1"]
