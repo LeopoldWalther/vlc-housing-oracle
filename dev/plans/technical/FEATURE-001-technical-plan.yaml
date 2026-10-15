@@ -159,7 +159,7 @@ technical_plan:
         listing, and descriptions containing synthetic phone numbers and honorific names. Every
         listing_detail row has exactly one listing_text row, and the landing keys from task 2.1 are
         unique.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2"]
