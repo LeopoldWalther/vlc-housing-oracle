@@ -621,7 +621,7 @@ technical_plan:
         directory), exit 1 with the error message for LandingContractError or SilverSchemaError.
         The test sets PYICEBERG_HOME to its temporary directory and PYICEBERG_CATALOG__TEST__URI and
         __WAREHOUSE to a SQLite catalog (L3).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["3.2"]
