@@ -722,7 +722,7 @@ technical_plan:
         <= landing observation; listing_text rows = listing rows with a detail record; a counts-only
         residual phone/honorific probe over Silver description, location and features. A probe hit
         in location or features means a follow-up r2 feature, not a change here.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.5
       depends_on: ["3.3", "4.1"]
