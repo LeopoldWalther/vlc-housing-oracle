@@ -5,8 +5,9 @@ documented landing contract. From there, this repository builds historized Silve
 Iceberg, Gold features and aggregates as Parquet, and models on top: fair-price estimation,
 time-on-market, and market dynamics.
 
-> **Status:** bootstrapping. The workflow, CI and contracts are in place; Silver is the first
-> feature. Nothing below the landing contract is implemented here yet.
+> **Status:** Silver is implemented: `python -m src.silver.rebuild --landing <dir> --catalog <name>`
+> rebuilds four Iceberg tables from landing v1 ([runbook](docs/silver-rebuild.md)). Gold and models
+> are not built yet.
 
 ## Architecture
 

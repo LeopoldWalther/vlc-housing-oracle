@@ -1,6 +1,6 @@
 # FEATURE-001 — Silver on Iceberg against landing/v1
 
-**Status:** 🟡 In progress · **Effort:** L (~16-20h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** L (~16-20h) · **Priority:** High
 **Branch root:** `feature/silver-rebuild` · **Created:** 2026-10-14 · **Updated:** 2026-10-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-001.md`).
@@ -499,3 +499,20 @@ dataset; the operator's runs use an AWS Glue catalog over the existing private b
     travel and snapshot properties, found the UTC session requirement and the two-snapshot overwrite.
     User chose a managed catalog (Glue selected over S3 Tables, see Design) and split
     `listing_event` into FEATURE-002.
+- **2026-10-15** — Reviewed: approved with corrections M1-M3 (explicit sink schema check, landing
+    key uniqueness and per-table required columns at the boundary). Tasks 1.1-4.1 implemented
+    test-first; 3.1 ran before 2.2 because `pyarrow` arrives with `pyiceberg[pyarrow]`.
+- **2026-10-16** — First operator run against real landing (counts only). The operator applied
+    `infra/silver` (one Glue database added) and rebuilt from a local sync of landing v1.
+    - Landing passed every boundary check: no repeated keys, no null required columns, detail and
+        text rows paired. This confirms review M2 on real data.
+    - Rows: `walk` 1,017 (landing 1,017); `observation` 50,445 (landing 50,461, so 16 padding
+        copies removed); `listing` 16,780; `listing_text` 16,775 = listings with a detail record
+        (landing `listing_detail` 16,813 records).
+    - All four snapshots carry one `rebuild_started_at`. Glue from the laptop works (Assumption 4).
+    - Redaction `r1`: 500 descriptions contain `[phone]`, 43 contain `[name]`. The `r1` phone pattern
+        finds 0 residual matches. A digit-bounded nine-digit probe finds 0; the 6 unbounded hits are
+        all digit runs inside longer numbers.
+    - `location` and `features`: 0 phone and 0 honorific matches, so `r1` needs no extension there.
+    - Titles: 34 honorific-name matches, 33 after a street word (street names, as assumed). One is
+        unexplained and stays verbatim under `r1`; it is the open input for a possible `r2`.

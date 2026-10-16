@@ -8,7 +8,7 @@ speculative roadmap: add a row only when its top-level plan exists.
 
 | ID | Title | Status | Branch | Effort | Priority | Owner |
 | --- | --- | --- | --- | --- | --- | --- |
-| FEATURE-001 | [Silver on Iceberg against landing/v1](FEATURE-001-silver-rebuild.md) | 🟡 In progress | `feature/silver-rebuild` | L (~16-20h) | High | architect |
+| FEATURE-001 | [Silver on Iceberg against landing/v1](FEATURE-001-silver-rebuild.md) | 🟢 Complete | `feature/silver-rebuild` | L (~16-20h) | High | architect |
 
 **Status legend:** 🔵 Planned · 🟡 In progress · 🟢 Complete · 🔴 Blocked · ⚪ Superseded
 
