@@ -20,9 +20,10 @@ time-on-market, and market dynamics.
 
 - **Landing** is the boundary. Its schema is a file, pinned by its SHA-256 in tests on both sides,
     and a change is a new version beside the old one.
-- **Silver** is rebuilt whole from landing by DuckDB SQL. Each rebuild is one Iceberg snapshot, so
-    a training dataset can name the exact rows it was built from
-    ([ADR 0001](docs/adr/0001-silver-on-iceberg.md)).
+- **Silver** is maintained incrementally from landing by DuckDB SQL: each run replaces only the
+    days a landing manifest names, and every Iceberg snapshot records that manifest, so a training
+    dataset can name the exact rows it was built from. A full rebuild remains as a backfill
+    ([ADR 0001](docs/adr/0001-silver-on-iceberg.md), [ADR 0002](docs/adr/0002-incremental-processing.md)).
 - **Gold** is plain Parquet, readable by a browser over HTTP.
 
 ## Where the data comes from
