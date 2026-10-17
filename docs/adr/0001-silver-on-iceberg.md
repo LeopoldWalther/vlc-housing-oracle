@@ -1,6 +1,7 @@
 # ADR 0001 — Silver on Apache Iceberg, Gold on plain Parquet
 
-**Status:** Accepted · **Date:** 2026-10-13
+**Status:** Accepted, amended by [ADR 0002](0002-incremental-processing.md) (incremental runs; the
+whole rebuild becomes a backfill) · **Date:** 2026-10-13
 
 ## Context
 
