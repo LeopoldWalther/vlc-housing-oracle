@@ -54,3 +54,17 @@ jobs:
       - name: Format
         if: ${{ !cancelled() }}
         run: ruff format --check src tests dev
+
+  terraform:
+    name: terraform-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.6
+
+      # Offline by design: -backend=false needs no state bucket and no AWS credentials.
+      - name: Terraform format and validate
+        run: terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate

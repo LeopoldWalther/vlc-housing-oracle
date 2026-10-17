@@ -1,0 +1,781 @@
+# Technical plan for FEATURE-001 — Silver on Iceberg against landing/v1.
+# Emitted by the reviewer with the approved review; it incorporates review corrections M1-M3 and
+# L1-L4. The task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-001"
+    created_by: "reviewer_agent"
+    created_at: "2026-10-15"
+    version: "1.0"
+    total_tasks: 14
+    estimated_hours: "19"
+    risk_level: "medium"
+    critical_path: ["1.1", "1.2", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.2", "3.3", "4.2"]
+    feature_plan: "dev/plans/FEATURE-001-silver-rebuild.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-001.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+      - "terraform-validate"
+    # No coverage threshold is configured in the repository or the approved plan.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - Imports are `src.<package>` from the repository root (`src/__init__.py`), matching
+      `python -m unittest discover -s tests -t .` and `python -m src.silver.rebuild`.
+    - Every fixture is synthetic: ids start with `syn-`, areas are invented, phone numbers use
+      repeated digits where the digits do not matter (L4). No test touches AWS or the network.
+    - Error messages carry table names, column names and counts, never row values.
+    - Silver constants live in `src/silver/rebuild.py`: NAMESPACE = "vlc_housing_silver",
+      TRANSFORMATION_VERSION = "silver-v1", REDACTION_VERSION = "r1".
+
+  tasks:
+    - id: "1.1"
+      title: "Pin the landing contract copy"
+      description: |
+        Copy `contracts/landing/v1/schema.json` byte for byte from the private acquisition
+        repository and pin its SHA-256. Write a public `contracts/landing/v1/README.md`: grain and
+        meaning of each table, what landing does not do (dedupe, newest record, events, redaction),
+        and the rule that a change is `landing/v2`. Name no source, provider, bucket or private path.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: []
+      branch: "feature/silver-rebuild/1.1-contract-pin"
+      commit_message: "feat(contracts): pin the landing v1 contract copy"
+      acceptance_criteria:
+        - "SHA-256 of contracts/landing/v1/schema.json equals f52989ab75f2321393082ea882a2b88c5630b51d22c71ff8af44335092369b72"
+        - "contracts/landing/v1/README.md documents the four tables and the v2 rule"
+        - "python dev/tools/check_leaks.py passes"
+      tdd:
+        red:
+          test_file: "tests/test_landing_contract.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_landing_contract.py' -v"
+          expected_failure: "FileNotFoundError: contracts/landing/v1/schema.json does not exist"
+        green:
+          behavior: "Add the byte-for-byte copy and the README"
+          command: "python -m unittest discover -s tests -t . -p 'test_landing_contract.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python dev/tools/check_leaks.py"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -p 'test_landing_contract.py' -v"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "contracts/landing/v1/schema.json"
+        - "contracts/landing/v1/README.md"
+        - "tests/test_landing_contract.py"
+      forbidden_files:
+        - "src/**"
+      can_run_parallel_with: ["4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "contracts/landing/v1/schema.json"
+        - "contracts/landing/v1/README.md"
+        - "tests/test_landing_contract.py"
+      files_to_modify: []
+
+    - id: "1.2"
+      title: "Write typed landing tables from rows"
+      description: |
+        `src/contracts.py` reads the contract (`landing_v1_columns() -> dict[str, list[tuple[str, str]]]`
+        and `landing_v1_sha256() -> str`, computed from the file). `src/synthetic/landing.py`
+        provides `write_landing_tables(directory, rows_by_table)`, which writes
+        `<directory>/<table>.parquet` via a typed DuckDB SELECT built from the contract, with absent
+        columns NULL. Adds `duckdb==1.5.6` to requirements.txt and removes `src/.gitkeep`.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.1"]
+      branch: "feature/silver-rebuild/1.2-landing-writer"
+      commit_message: "feat(synthetic): write typed landing tables from rows"
+      acceptance_criteria:
+        - "One walk row writes walk.parquet whose DESCRIBE equals the contract's walk columns in order"
+        - "A column absent from the rows is NULL and keeps its contract type, including an all-null INTEGER"
+        - "An unknown table name or column name raises ValueError naming it"
+        - "landing_v1_sha256() equals the pinned digest"
+      tdd:
+        red:
+          test_file: "tests/test_synthetic_landing.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.synthetic'"
+        green:
+          behavior: "Contract reader plus a writer composing one typed SELECT per table and COPY TO parquet"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+        refactor:
+          rule: "The contract is parsed only in src/contracts.py"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/__init__.py"
+        - "src/.gitkeep"
+        - "src/contracts.py"
+        - "src/synthetic/__init__.py"
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+        - "requirements.txt"
+      forbidden_files:
+        - "contracts/landing/v1/schema.json"
+      can_run_parallel_with: ["4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/__init__.py"
+        - "src/contracts.py"
+        - "src/synthetic/__init__.py"
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+      files_to_modify:
+        - "src/.gitkeep"
+        - "requirements.txt"
+
+    - id: "1.3"
+      title: "Seeded synthetic landing with the hard cases"
+      description: |
+        `generate_landing(directory, *, seed)` writes all four tables via write_landing_tables:
+        named scenario rows plus filler from `random.Random(seed)`. Scenarios: a recorded replay, an
+        inferred replay, a legacy walk with null run instants, a two-area run crossing midnight,
+        a lone empty card, one listing on one day in two areas (priced + empty), one listing only as
+        two empty cards in two areas, a listing with detail records on two days, a listing with two
+        detail records at the same observed_at and ingested_at in two areas, an observation-only
+        listing, and descriptions containing synthetic phone numbers and honorific names. Every
+        listing_detail row has exactly one listing_text row, and the landing keys from task 2.1 are
+        unique.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.2"]
+      branch: "feature/silver-rebuild/1.3-synthetic-generator"
+      commit_message: "feat(synthetic): seeded landing generator with the hard cases"
+      acceptance_criteria:
+        - "All four tables conform to the contract by DESCRIBE"
+        - "Each named scenario is present (asserted per scenario by query)"
+        - "The same seed gives equal row sets; two seeds give different filler"
+        - "Every source_listing_id starts with 'syn-'"
+      tdd:
+        red:
+          test_file: "tests/test_synthetic_landing.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+          expected_failure: "ImportError: cannot import name 'generate_landing'"
+        green:
+          behavior: "Hand-written scenario rows plus seeded filler"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+        refactor:
+          rule: "One small function per named scenario"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "python dev/tools/check_leaks.py"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+      forbidden_files:
+        - "src/silver/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+
+    - id: "2.1"
+      title: "Check landing at the boundary"
+      description: |
+        `register_landing(connection, directory)` in `src/silver/landing.py` creates the views
+        `landing_walk`, `landing_observation`, `landing_listing_detail`, `landing_listing_text` after
+        checking each file, and raises `LandingContractError` (defined there) otherwise. Checks
+        (review M2, M3):
+        - the file exists and DESCRIBE equals the contract (name and type, in order);
+        - per-table non-null columns: walk (source, area, observed_date); observation (source, area,
+          source_listing_id, observed_at, observed_date, is_empty_card); listing_detail and
+          listing_text (source, area, source_listing_id, observed_at, observed_date);
+        - unique keys: observation (source, area, source_listing_id, observed_date); listing_detail
+          and listing_text (source, area, source_listing_id, observed_at);
+        - listing_detail and listing_text keys match one to one.
+        Messages name the table, the columns or key, and a count; never values.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.2"]
+      branch: "feature/silver-rebuild/2.1-landing-boundary"
+      commit_message: "feat(silver): check landing against the contract at the boundary"
+      acceptance_criteria:
+        - "A conforming directory registers four views"
+        - "A missing file, a reordered column and a wrong type each raise LandingContractError naming the table"
+        - "A null source_listing_id and a null is_empty_card each raise with table, column and count"
+        - "A duplicate observation key and a duplicate listing_detail key each raise with table and count"
+        - "A listing_detail row without a listing_text row raises, and so does the reverse"
+        - "No error message contains a row value"
+      tdd:
+        red:
+          test_file: "tests/test_silver_landing.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_landing.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver'"
+        green:
+          behavior: "DESCRIBE comparison, then one aggregate query per null, uniqueness and pairing rule"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_landing.py' -v"
+        refactor:
+          rule: "Keep the per-table rule table as data in one place"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/__init__.py"
+        - "src/silver/landing.py"
+        - "tests/test_silver_landing.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/__init__.py"
+        - "src/silver/landing.py"
+        - "tests/test_silver_landing.py"
+      files_to_modify: []
+
+    - id: "2.2"
+      title: "Silver walk"
+      description: |
+        `build_tables(connection) -> dict[str, pyarrow.Table]` in `src/silver/rebuild.py` executes
+        `src/silver/sql/<table>.sql` files over the registered views. `walk.sql` keeps every contract
+        column unchanged, adds `transformation_version = 'silver-v1'`, and orders by
+        (area, run_started_at). Tests use write_landing_tables fixtures, not the generator.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["2.1"]
+      branch: "feature/silver-rebuild/2.2-walk"
+      commit_message: "feat(silver): walk table"
+      acceptance_criteria:
+        - "Two areas of one run, a legacy report and a recorded replay give three rows with unchanged contract columns"
+        - "Every row has transformation_version 'silver-v1'"
+        - "Arrow types: timestamps tz=UTC, observed_date date32, pages int32, complete bool"
+      tdd:
+        red:
+          test_file: "tests/test_silver_walk.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_walk.py' -v"
+          expected_failure: "ImportError: cannot import name 'build_tables' from 'src.silver.rebuild'"
+        green:
+          behavior: "walk.sql and build_tables reading SQL files from the package directory"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_walk.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/walk.sql"
+        - "tests/test_silver_walk.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/walk.sql"
+        - "tests/test_silver_walk.py"
+      files_to_modify: []
+
+    - id: "2.3"
+      title: "Silver observation, deduplicated by a total order"
+      description: |
+        `observation.sql`: one row per (source, source_listing_id, observed_date), chosen by
+        ROW_NUMBER over is_empty_card ASC, price_eur DESC NULLS LAST, municipality ASC,
+        district ASC NULLS FIRST, operation ASC, observed_at ASC, ingested_at ASC NULLS LAST.
+        Keeps every contract column of the chosen row plus transformation_version; ordered by
+        (source_listing_id, observed_date).
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["2.2"]
+      branch: "feature/silver-rebuild/2.3-observation"
+      commit_message: "feat(silver): observation deduplicated by a total order"
+      acceptance_criteria:
+        - "Priced and empty copies of one id-day in two areas: the priced copy survives, is_empty_card false"
+        - "Two empty copies in two areas: the alphabetically first municipality survives"
+        - "A lone empty card is kept with is_empty_card true"
+        - "An all-null price_eur column is still int32"
+        - "Output is unique on (source, source_listing_id, observed_date)"
+      tdd:
+        red:
+          test_file: "tests/test_silver_observation.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_observation.py' -v"
+          expected_failure: "KeyError: 'observation' — build_tables returns no observation table"
+        green:
+          behavior: "observation.sql with the ranking window, registered in build_tables"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_observation.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/observation.sql"
+        - "tests/test_silver_observation.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sql/observation.sql"
+        - "tests/test_silver_observation.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.4"
+      title: "Silver listing, attributes only"
+      description: |
+        `listing.sql`: one row per (source, source_listing_id) in the union of Silver observation
+        and landing listing_detail. A `chosen_detail` CTE picks the newest detail record by
+        observed_at DESC, ingested_at DESC NULLS LAST, municipality ASC, district ASC NULLS FIRST,
+        operation ASC. The row carries every listing_detail column of that record except the key
+        columns repeated below, renaming its observed_at to detail_observed_at and keeping its
+        ingested_at; plus first_seen = min(observed_date), last_seen = max(observed_date) and
+        days_observed = count(*) over every Silver observation row of the listing, empty cards
+        included (L1); plus transformation_version. A listing without detail has null attribute and
+        area columns (area, operation, municipality, district) (L2); a detail-only listing has null
+        seen columns. No title, description, location or features column. Ordered by
+        source_listing_id.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["2.3"]
+      branch: "feature/silver-rebuild/2.4-listing"
+      commit_message: "feat(silver): listing attributes from the newest detail record"
+      acceptance_criteria:
+        - "Detail records on two days: attributes and detail_observed_at come from the newer"
+        - "Two records with equal observed_at and ingested_at in two areas: the first municipality wins"
+        - "first_seen, last_seen and days_observed count every deduplicated observation including empty cards"
+        - "An observation-only listing has null attributes and null area columns; a detail-only listing has null seen columns"
+        - "No title, description, location or features column exists"
+        - "Output is unique on (source, source_listing_id); an all-null attribute keeps its type"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing.py' -v"
+          expected_failure: "KeyError: 'listing' — build_tables returns no listing table"
+        green:
+          behavior: "listing.sql with the chosen_detail CTE and the seen aggregate, full outer joined"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing.py' -v"
+        refactor:
+          rule: "Put the chosen_detail CTE where 2.5 can reuse it (a view created in build_tables)"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/chosen_detail.sql"
+        - "tests/test_silver_listing.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/chosen_detail.sql"
+        - "tests/test_silver_listing.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.5"
+      title: "Silver listing_text from the chosen record"
+      description: |
+        `listing_text.sql`: one row per listing with a detail record, joined from chosen_detail to
+        landing listing_text on (source, area, source_listing_id, observed_at). Carries source,
+        source_listing_id, observed_at, ingested_at, title, location, description, features verbatim,
+        plus transformation_version. Pairing is already guaranteed by task 2.1 (review M2), so no
+        error path is added here. Ordered by source_listing_id.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["2.4"]
+      branch: "feature/silver-rebuild/2.5-listing-text"
+      commit_message: "feat(silver): listing_text from the chosen detail record"
+      acceptance_criteria:
+        - "Detail records on two days: listing_text carries the newer record's text"
+        - "title, location and features are verbatim"
+        - "listing_text has exactly the listings of listing that have a detail record, one row each"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_text.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing_text.py' -v"
+          expected_failure: "KeyError: 'listing_text' — build_tables returns no listing_text table"
+        green:
+          behavior: "listing_text.sql joining chosen_detail to landing_listing_text"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing_text.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/listing_text.sql"
+        - "tests/test_silver_listing_text.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sql/listing_text.sql"
+        - "tests/test_silver_listing_text.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.6"
+      title: "Redact descriptions under r1"
+      description: |
+        `redact.sql` defines the macro `redact_personal(text)`: regexp_replace with option 'g' of
+        `(\+34[ .-]?|0034[ .-]?|\b)[6789]([ .-]?[0-9]){8}` with `[phone]`, then of
+        `\b(Sr|Sra|Srta|Don|Doña|Dña)\.?\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+` with `[name]`. build_tables creates
+        it before the table statements; listing_text.sql applies it to description and adds
+        redaction_version = 'r1'. Titles, location and features stay verbatim.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["2.5"]
+      branch: "feature/silver-rebuild/2.6-redaction"
+      commit_message: "feat(silver): redact phone numbers and names in descriptions (r1)"
+      acceptance_criteria:
+        - "Phone formats '600 000 000', '+34600000000.', '0034 600-000-000', '+34 700 000 000h' become [phone]"
+        - "'Sra. García' becomes [name]"
+        - "A description with two numbers and a name has all three replaced"
+        - "'690.000 €', 'Ref 123456789' and 'reformado 2023' survive unchanged"
+        - "A title 'calle Don Juan' stays verbatim"
+        - "Every listing_text row has redaction_version 'r1'"
+      tdd:
+        red:
+          test_file: "tests/test_silver_redaction.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_redaction.py' -v"
+          expected_failure: "AssertionError: the description is still verbatim (no [phone] replacement)"
+        green:
+          behavior: "redact.sql macro created in build_tables and applied in listing_text.sql"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_redaction.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "python dev/tools/check_leaks.py"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/redact.sql"
+        - "src/silver/sql/listing_text.sql"
+        - "tests/test_silver_redaction.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.3", "3.1", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sql/redact.sql"
+        - "tests/test_silver_redaction.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/listing_text.sql"
+
+    - id: "3.1"
+      title: "Iceberg sink with an explicit schema check"
+      description: |
+        `write_silver_tables(catalog, namespace, tables, properties) -> dict[str, int]` in
+        `src/silver/sink.py`: create the namespace and missing tables from the Arrow schema; for an
+        existing table, first compare the ordered column names of the Arrow table with
+        `[f.name for f in table.schema().fields]` and raise `SilverSchemaError` naming missing and
+        extra columns; then `table.overwrite(arrow, snapshot_properties=properties)`, re-raising
+        PyIceberg's ValueError as SilverSchemaError with `from` (review M1). Return each table's
+        `current_snapshot().snapshot_id` after its commit. Adds
+        `pyiceberg[pyarrow,sql-sqlite,glue]==0.12.0` to requirements.txt. Tests use a SqlCatalog on
+        SQLite in a temporary directory.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.2"]
+      branch: "feature/silver-rebuild/3.1-iceberg-sink"
+      commit_message: "feat(silver): Iceberg sink with an explicit schema check"
+      acceptance_criteria:
+        - "A first write creates namespace and tables and returns one snapshot id per table"
+        - "A second write overwrites; scanning the first snapshot id returns the first rows"
+        - "Both commits' snapshot summaries carry the given properties"
+        - "A missing column, an extra column and a changed type each raise SilverSchemaError and leave the current snapshot unchanged"
+        - "A list<string> column round-trips without a false schema error"
+      tdd:
+        red:
+          test_file: "tests/test_silver_sink.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.sink'"
+        green:
+          behavior: "Create-or-load, name comparison, overwrite with properties, wrapped type errors"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/__init__.py"
+        - "src/silver/sink.py"
+        - "tests/test_silver_sink.py"
+        - "requirements.txt"
+      forbidden_files:
+        - "src/silver/sql/**"
+      can_run_parallel_with: ["1.3", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sink.py"
+        - "tests/test_silver_sink.py"
+      files_to_modify:
+        - "src/silver/__init__.py"
+        - "requirements.txt"
+
+    - id: "3.2"
+      title: "rebuild() end to end on synthetic landing"
+      description: |
+        `rebuild(connection, catalog, *, landing, now) -> RebuildResult` sets
+        `TimeZone = 'UTC'`, calls register_landing, build_tables (all Arrow tables before any
+        commit), then write_silver_tables into NAMESPACE with properties transformation_version,
+        redaction_version, landing_contract_sha256 (from src/contracts.py) and rebuild_started_at
+        (now(), ISO-8601 UTC). RebuildResult is a frozen dataclass mapping table -> row count and
+        table -> snapshot id.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.3", "2.6", "3.1"]
+      branch: "feature/silver-rebuild/3.2-rebuild"
+      commit_message: "feat(silver): rebuild Silver from landing into Iceberg"
+      acceptance_criteria:
+        - "Over generate_landing(seed=1), row counts in RebuildResult equal each table's scan"
+        - "Snapshot summaries carry the contract digest, both versions and the fixed instant"
+        - "It succeeds when the connection's session zone was 'Europe/Madrid'"
+        - "A non-conforming landing raises LandingContractError and creates no table"
+        - "Regression guard: two rebuilds give equal row sets per table"
+      tdd:
+        red:
+          test_file: "tests/test_silver_rebuild.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_rebuild.py' -v"
+          expected_failure: "ImportError: cannot import name 'rebuild' from 'src.silver.rebuild'"
+        green:
+          behavior: "Compose register_landing, build_tables and write_silver_tables with the injected clock"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_rebuild.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "tests/test_silver_rebuild.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "3.3"
+      title: "The rebuild CLI"
+      description: |
+        `main(argv=None) -> int` and `if __name__ == "__main__"` in src/silver/rebuild.py:
+        `python -m src.silver.rebuild --landing <dir> --catalog <name>`. The catalog resolves via
+        `pyiceberg.catalog.load_catalog(name)`; the clock is `datetime.now(UTC)`. Prints one line per
+        table with row count and snapshot id. Exit 2 for usage errors (argparse, missing landing
+        directory), exit 1 with the error message for LandingContractError or SilverSchemaError.
+        The test sets PYICEBERG_HOME to its temporary directory and PYICEBERG_CATALOG__TEST__URI and
+        __WAREHOUSE to a SQLite catalog (L3).
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["3.2"]
+      branch: "feature/silver-rebuild/3.3-cli"
+      commit_message: "feat(silver): command-line rebuild"
+      acceptance_criteria:
+        - "A run over synthetic landing exits 0 and prints each of the four tables with row count and snapshot id"
+        - "A missing --landing directory exits 2 with a message"
+        - "A non-conforming landing exits 1 naming the table"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_cli.py' -v"
+          expected_failure: "The subprocess exits non-zero because src.silver.rebuild has no __main__ entry"
+        green:
+          behavior: "argparse main composing load_catalog, duckdb.connect and rebuild"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_cli.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "src/synthetic/**"
+      can_run_parallel_with: ["4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "tests/test_silver_cli.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "4.1"
+      title: "Glue database as code, validated in CI"
+      description: |
+        Validation-first infrastructure task. `infra/silver/`: aws_glue_catalog_database
+        `vlc_housing_silver` with location_uri "s3://${var.lake_bucket}/silver/"; variables
+        lake_bucket (no default) and region (default eu-central-1); hashicorp/aws ">= 5.0, < 6.0";
+        required_version ">= 1.10, < 2.0"; S3 backend with partial configuration and
+        backend.hcl.example holding placeholders only; infra/silver/.terraform.lock.hcl committed.
+        CI gains a `terraform-validate` job using hashicorp/setup-terraform with
+        terraform_version 1.14.6 and running exactly the command in final_commands. No apply happens
+        in this task; the operator applies after merge.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1.5
+      depends_on: []
+      branch: "feature/silver-rebuild/4.1-glue-database"
+      commit_message: "feat(infra): Glue database for Silver"
+      acceptance_criteria:
+        - "terraform init -backend=false, fmt -check and validate pass in infra/silver"
+        - "CI has a terraform-validate job running the same command"
+        - "No bucket name, account id or state bucket appears in any committed file; the leak guard passes"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+        - "python -m unittest discover -s tests -t . -p 'test_tooling_pins.py' -v"
+      allowed_files:
+        - "infra/silver/main.tf"
+        - "infra/silver/variables.tf"
+        - "infra/silver/providers.tf"
+        - "infra/silver/backend.tf"
+        - "infra/silver/backend.hcl.example"
+        - "infra/silver/.terraform.lock.hcl"
+        - ".github/workflows/ci.yml"
+      forbidden_files:
+        - "src/**"
+        - "**/*.tfvars"
+        - "**/*.tfstate"
+      can_run_parallel_with: ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.1", "3.2", "3.3"]
+      reversible: true
+      rollback: "Revert the task commit; nothing is applied in this task"
+      files_to_create:
+        - "infra/silver/main.tf"
+        - "infra/silver/variables.tf"
+        - "infra/silver/providers.tf"
+        - "infra/silver/backend.tf"
+        - "infra/silver/backend.hcl.example"
+        - "infra/silver/.terraform.lock.hcl"
+      files_to_modify:
+        - ".github/workflows/ci.yml"
+
+    - id: "4.2"
+      title: "Runbook and one operator run"
+      description: |
+        Validation-first documentation task. Write docs/silver-rebuild.md: terraform apply with the
+        private backend config; syncing landing/v1 to a local directory; a ~/.pyiceberg.yaml Glue entry
+        with placeholders; the command; the four schemas and their rules; snapshot properties;
+        reading a pinned snapshot from DuckDB (iceberg_scan) and PyIceberg; why the reported snapshot
+        is the post-commit APPEND; the partial-rebuild signal; rollback via manage_snapshots.
+        Update the README status line. The operator then runs the rebuild against real landing and
+        the progress log of the feature plan records counts only: rows per table; Silver observation
+        <= landing observation; listing_text rows = listing rows with a detail record; a counts-only
+        residual phone/honorific probe over Silver description, location and features. A probe hit
+        in location or features means a follow-up r2 feature, not a change here.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1.5
+      depends_on: ["3.3", "4.1"]
+      branch: "feature/silver-rebuild/4.2-runbook"
+      commit_message: "docs(silver): rebuild runbook and first operator run"
+      acceptance_criteria:
+        - "docs/silver-rebuild.md covers every item in the description with placeholders only"
+        - "README status line says Silver is implemented and names the command"
+        - "The feature plan's progress log records the operator run as counts only"
+        - "python dev/tools/check_leaks.py and validate_workflow.py pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+        - "dev/plans/FEATURE-001-silver-rebuild.md"
+      forbidden_files:
+        - "src/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the documentation commit; a Silver snapshot written by the operator run stays in the private warehouse and is harmless"
+      files_to_create:
+        - "docs/silver-rebuild.md"
+      files_to_modify:
+        - "README.md"
+        - "dev/plans/FEATURE-001-silver-rebuild.md"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/silver-rebuild/integration"
+    task_branch_strategy: |
+      Create the integration branch from main. A task without dependencies (1.1, 4.1) starts from
+      the integration branch. A dependent task starts from the integration branch after all of its
+      depends_on tasks are merged into it. 1.2 and 3.1 both edit requirements.txt; 3.1 depends on 1.2
+      so they never conflict.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch with
+      --no-ff in dependency order (1.1, 1.2, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 1.3, 3.1, 3.2, 3.3, then
+      4.1 whenever ready, 4.2 last), never rewriting history, and run validation.final_commands there.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "fix", "test", "docs", "refactor", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval"
+    final_pr_title: "feat(silver): Silver on Iceberg against landing/v1"
+    final_pr_description: |
+      Implements FEATURE-001. See dev/reviews/REVIEW-FEATURE-001.md for context.
+
+  notes:
+    - "rebuild() must SET TimeZone = 'UTC': DuckDB exports TIMESTAMPTZ in the session zone and PyIceberg rejects non-UTC (plan Assumption 1)."
+    - "Never compare Arrow schemas for equality against an Iceberg table: large_string, element names and field-id metadata differ (review M1)."
+    - "PyIceberg overwrite accepts a missing column silently; the name check in 3.1 is what prevents it (review M1)."
+    - "An overwrite writes DELETE then APPEND snapshots; report current_snapshot() after the commit."
+    - "DuckDB regexp_replace replaces only the first match without the 'g' option."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
