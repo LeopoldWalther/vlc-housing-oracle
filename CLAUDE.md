@@ -39,10 +39,11 @@ Keep dependencies directed through these boundaries:
 1. **Landing** (input, owned elsewhere): Parquet tables under `landing/v<n>/` whose schema is
      `contracts/landing/v<n>/schema.json`. This repository reads landing and never writes it.
 2. **Silver** validates, deduplicates, and historizes listings as **Apache Iceberg** tables,
-     maintained incrementally from landing by pure DuckDB transformations: each run replaces the
-     day partitions a landing manifest names and records that manifest in its snapshots; a full
-     rebuild is a deliberate backfill (see [ADR 0001](docs/adr/0001-silver-on-iceberg.md) and
-     [ADR 0002](docs/adr/0002-incremental-processing.md)).
+     maintained incrementally from landing by pure DuckDB transformations: landing announces
+     every collection run with an immutable commit, Silver processes the commits its ingest log
+     does not hold yet and replaces the days they touch; a full rebuild is a deliberate backfill
+     (see [ADR 0001](docs/adr/0001-silver-on-iceberg.md) and
+     [ADR 0003](docs/adr/0003-immutable-bronze-and-landing-per-run.md)).
 3. **Gold** publishes use-case-specific features, aggregates, and training datasets as plain
      Parquet, so a browser can read them over HTTP.
 4. **Consumers** (notebooks, models, a web front end) query curated data only.
@@ -95,8 +96,9 @@ Apply a named pattern only when it removes present duplication or coupling. Like
 - Define and test table schemas deliberately. The landing contract is identified by its schema
     file's SHA-256, pinned in a test; a change is a new `landing/v<n>`, never an edit.
 - Process incrementally by day partition: replace whole partitions, never append row by row, so a
-    rerun is harmless. Store a run's checkpoint with its output (landing manifest, Iceberg snapshot
-    property), not in a separate state store. A rule change carries a new `transformation_version`
+    rerun is harmless. Find pending work by a set difference over immutable commits, never by a
+    clock or a watermark, and store a run's checkpoint with its output (an ingest log written last),
+    not in a separate state store. A rule change carries a new `transformation_version`
     and is applied to history by an explicit full backfill; it never silently rewrites history. Gold is Parquet under versioned
     prefixes.
 - Preserve temporal meaning: distinguish source publication/update time, observation time, and

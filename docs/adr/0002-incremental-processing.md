@@ -1,6 +1,6 @@
 # ADR 0002 — Incremental processing by partition, with manifests as the change log
 
-**Status:** Accepted · **Date:** 2026-10-17 · **Amends:** [ADR 0001](0001-silver-on-iceberg.md)
+**Status:** Superseded by [ADR 0003](0003-immutable-bronze-and-landing-per-run.md) on 2026-10-18 · **Date:** 2026-10-17 · **Amends:** [ADR 0001](0001-silver-on-iceberg.md)
 
 ## Context
 

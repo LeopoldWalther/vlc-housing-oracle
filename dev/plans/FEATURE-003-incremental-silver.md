@@ -1,7 +1,14 @@
 # FEATURE-003 — Incremental Silver from landing v2, run by AWS
 
-**Status:** 🔵 Planned · **Effort:** L (~20-24h) · **Priority:** High
+**Status:** ⚪ Superseded · **Effort:** L (~20-24h) · **Priority:** High
 **Branch root:** `feature/incremental-silver` · **Created:** 2026-10-16 · **Updated:** 2026-10-17
+
+> **Superseded on 2026-10-18 by [ADR 0003](../../docs/adr/0003-immutable-bronze-and-landing-per-run.md).**
+> Landing v2 and its manifests were retired before Silver read them. The successor feature plans
+> incremental Silver against [landing v3](../../contracts/landing/v3/README.md): commits per
+> collection run, an ingest log, a set difference instead of a checkpoint id. Much of this plan's
+> Silver-side design (day replacement, affected listings, the Fargate task, the trigger shape)
+> carries over; it is kept as the record.
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-003.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-003-technical-plan.yaml`.
