@@ -1,8 +1,7 @@
 # Landing contract v2
 
-**Status:** proposed by [ADR 0002](../../../docs/adr/0002-incremental-processing.md). It is frozen
-once both repositories pin the digest below: this repository in FEATURE-003, the acquisition
-repository in its FEATURE-015. Until then it may still change. Afterwards a change is `landing/v3`.
+**Status:** superseded by [v3](../v3/README.md) and [ADR 0003](../../../docs/adr/0003-immutable-bronze-and-landing-per-run.md)
+on 2026-10-18, before anything read it. Kept as the record of ADR 0002. Do not pin or implement.
 
 Landing v2 carries **the same four tables with the same columns as [v1](../v1/README.md)**; read
 that document for what each row means. What v2 adds is a **layout partitioned by day** and an

@@ -37,6 +37,8 @@ STATUS_MARKERS = {
     "in-progress": "🟡",
     "complete": "🟢",
     "blocked": "🔴",
+    # Declared, never derived: the feature was replaced by another and its tasks will not run.
+    "superseded": "⚪",
 }
 
 # Folder layouts we have since moved away from; flag any lingering mention.
@@ -150,6 +152,11 @@ def _expected_marker(task_statuses: list[str]) -> str:
     return STATUS_MARKERS["in-progress"]
 
 
+def _status_matches(marker: str, task_statuses: list[str]) -> bool:
+    """A superseded feature's status is declared; every other status must follow its tasks."""
+    return marker == STATUS_MARKERS["superseded"] or marker == _expected_marker(task_statuses)
+
+
 def _plan_file_for(feature_id: str) -> Path | None:
     matches = sorted(PLANS_DIR.glob(f"{feature_id}-*.md"))
     return matches[0] if matches else None
@@ -201,7 +208,7 @@ def _check_plan(
         marker = _plan_file_status(plan_file)
         if marker is None:
             errors.append(f"{rel_plan}: missing or unrecognized **Status:** header")
-        elif marker != expected:
+        elif not _status_matches(marker, plan.task_statuses):
             errors.append(
                 f"{rel_plan}: status {marker} disagrees with technical progress {progress} (expected {expected})"
             )
@@ -209,7 +216,7 @@ def _check_plan(
     readme_marker = readme.get(plan.feature_id)
     if readme_marker is None:
         warnings.append(f"dev/plans/README.md: no table row for {plan.feature_id}")
-    elif readme_marker != expected:
+    elif not _status_matches(readme_marker, plan.task_statuses):
         errors.append(
             f"dev/plans/README.md: status {readme_marker} for {plan.feature_id} "
             f"disagrees with technical progress {progress} (expected {expected})"
