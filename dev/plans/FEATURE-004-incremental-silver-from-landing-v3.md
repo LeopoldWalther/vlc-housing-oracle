@@ -125,6 +125,10 @@ feature nothing reads landing v1.
     — **Consequence:** overlap is prevented upstream by the FIFO queue (Design), not detected
     downstream. Idempotent writes (whole-day replacement, upserts keyed by listing, an ingest log
     upserted by `run_id`) make a repeated run harmless; they do not make an overlapping run safe.
+- **Assumption 6 — the commit index stays small enough to list on every run.** — **Evidence:**
+    about eight collection runs a day: 3,000 commits a year, one paginated listing of a few
+    pages. The ingest log keeps each run's days, so only pending commits are read. — **If
+    wrong:** list by `run_date` prefixes for the last N days, as landing does.
 - **Assumption 7 — one incremental Silver run finishes well inside the Lambda consumer's
     15-minute limit.** — **Evidence:** the acquisition landing task landed 144 runs in 3 min 22 s,
     and a Silver night touches one or two days; FEATURE-001's whole rebuild took seconds locally.
@@ -138,10 +142,6 @@ feature nothing reads landing v1.
     invocation and by the daily catch-up. — **If wrong:** a transient outage longer than three
     deliveries (about 48 minutes) parks the message, the alarm fires, and the catch-up at 05:30
     repeats the work the next morning; nothing is lost.
-- **Assumption 6 — the commit index stays small enough to list on every run.** — **Evidence:**
-    about eight collection runs a day: 3,000 commits a year, one paginated listing of a few
-    pages. The ingest log keeps each run's days, so only pending commits are read. — **If
-    wrong:** list by `run_date` prefixes for the last N days, as landing does.
 
 ## Design
 
