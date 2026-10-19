@@ -10,8 +10,8 @@ technical_plan:
     created_by: "reviewer_agent"
     created_at: "2026-10-19"
     version: "1.0"
-    total_tasks: 18
-    estimated_hours: "33.5"
+    total_tasks: 19
+    estimated_hours: "35.5"
     risk_level: "medium"
     critical_path: ["1.1", "1.2", "2.1", "1.2b", "2.2", "3.2", "3.3", "4.1", "5.1", "5.2", "5.3", "6.1", "6.2"]
     feature_plan: "dev/plans/FEATURE-004-incremental-silver-from-landing-v3.md"
@@ -718,6 +718,62 @@ technical_plan:
         - "tests/test_silver_consumer.py"
       files_to_modify: []
 
+    - id: "4.3"
+      title: "A backfill adds new columns to FEATURE-001's tables"
+      description: |
+        Added on 2026-10-19 with the user's decision, after implementation found that the Silver
+        tables FEATURE-001 left in AWS lack run_id, so the first backfill (6.1) would stop at the
+        strict column check. The sink's writers gain `allow_new_columns` (default False): when the
+        existing columns are an ordered subsequence of the new rows' columns, the missing ones are
+        added (`update_schema().union_by_name`) and moved into place (`move_first`/`move_after`);
+        a removed, reordered or retyped column still raises SilverSchemaError and changes nothing.
+        Only the backfill mode allows it, and it writes listing and listing_text by a whole-table
+        overwrite instead of an upsert, because PyIceberg 0.12's upsert fails on a table whose old
+        files predate the new columns (spike 2026-10-19). Earlier snapshots stay readable with
+        their own columns. The incremental mode stays strict.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["3.3", "4.1"]
+      branch: "feature/incremental-silver-v3/4.3-backfill-adds-columns"
+      commit_message: "feat(silver): a backfill adds new columns to existing Silver tables"
+      acceptance_criteria:
+        - "With allow_new_columns, a table missing run_id gets it after source; rows are written; an earlier snapshot still reads with its old columns"
+        - "With allow_new_columns, a removed column and a changed type still raise SilverSchemaError and leave the schema unchanged"
+        - "Without it, a new column raises SilverSchemaError as before"
+        - "A backfill over FEATURE-001-shaped tables (no run_id, no listing_detail, unpartitioned) succeeds and equals a backfill into an empty catalog"
+        - "An incremental run over FEATURE-001-shaped tables raises SilverSchemaError before any commit"
+      tdd:
+        red:
+          test_file: "tests/test_silver_sink.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+          expected_failure: "TypeError: replace_days() got an unexpected keyword argument 'allow_new_columns'"
+        green:
+          behavior: "Additive column evolution in the sink, enabled only by the backfill mode, with whole-table writes for listing and listing_text in backfill"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+        refactor:
+          rule: "One private function decides between equal, additive and refused schemas for every writer"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_sink.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; nothing is applied in this task"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_sink.py"
+        - "tests/test_silver_rebuild.py"
+
     - id: "5.1"
       title: "Dockerfile, .dockerignore and the image workflow"
       description: |
@@ -869,7 +925,7 @@ technical_plan:
       status: "not_started"
       complexity: "medium"
       estimated_hours: 1.5
-      depends_on: ["5.3"]
+      depends_on: ["5.3", "4.3"]
       branch: "feature/incremental-silver-v3/6.1-first-runs"
       commit_message: "docs(silver): first backfill and first queued run in AWS"
       acceptance_criteria:
