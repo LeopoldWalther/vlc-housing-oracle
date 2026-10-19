@@ -1,0 +1,964 @@
+# Technical plan for FEATURE-004 — Incremental Silver from landing v3, run by AWS.
+# Emitted by the reviewer with the round-2 approval. It carries round-1 corrections (H1, M1-M3,
+# L1-L4, folded into the plan) and round-2 corrections R2-M1 (the consumer adopts a running task
+# or starts one), R2-M2 (no batching window on the FIFO event source mapping) and R2-L1-L3.
+# Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-004"
+    created_by: "reviewer_agent"
+    created_at: "2026-10-19"
+    version: "1.0"
+    total_tasks: 18
+    estimated_hours: "33.5"
+    risk_level: "medium"
+    critical_path: ["1.1", "1.2", "2.1", "1.2b", "2.2", "3.2", "3.3", "4.1", "5.1", "5.2", "5.3", "6.1", "6.2"]
+    feature_plan: "dev/plans/FEATURE-004-incremental-silver-from-landing-v3.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-004.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+      - "terraform-validate"
+    # No coverage threshold is configured. The test count must never fall below 83, the count on
+    # 0a1387a before the migration (review R2-L3).
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - Imports are `src.<package>` from the repository root, matching
+      `python -m unittest discover -s tests -t .` and `python -m src.silver.rebuild`.
+    - Every fixture is synthetic: `syn-` listing ids, invented areas, run ids built from invented
+      instants or `import-<date>`, visibly fake phone numbers. No test touches AWS or the network.
+    - Errors name tables, run ids, days and counts, never row values.
+    - Constants stay in `src/silver/rebuild.py`: NAMESPACE = "vlc_housing_silver",
+      TRANSFORMATION_VERSION = "silver-v1", REDACTION_VERSION = "r1"; the ingest table is
+      `landing_ingest`.
+    - "Latest run" always means latest `run_started_at`, then `run_id` (plan, L3).
+    - Correctness never relies on an Iceberg commit failing: PyIceberg 0.12 rebases and retries
+      a conflicting commit (plan, Assumption 5). Overlap is prevented by the queue and the
+      consumer's adopt-or-start rule, not detected.
+    - `infra/silver/terraform.tfvars` and `infra/silver/backend.tfvars` exist locally with real
+      values, are gitignored, and are never read, printed, staged or modified by a task.
+
+  tasks:
+    - id: "1.1"
+      title: "Pin landing v3"
+      description: |
+        `src/contracts.py` gains `landing_v3_columns() -> dict[str, list[tuple[str, str]]]` and
+        `landing_v3_sha256() -> str`, read from `contracts/landing/v3/schema.json`, beside the
+        existing v1 readers, which stay.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: []
+      branch: "feature/incremental-silver-v3/1.1-pin-landing-v3"
+      commit_message: "feat(contracts): pin the landing v3 contract"
+      acceptance_criteria:
+        - "landing_v3_sha256() equals 0ccda5843a11ec12b6d6ecf8cb9f8301c0df41a3564122b4c4bd78ce0672e61b"
+        - "Every v3 table's columns are v1's columns with ('run_id', 'VARCHAR') inserted right after 'source'"
+        - "The v1 digest test still passes"
+      tdd:
+        red:
+          test_file: "tests/test_landing_contract.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_landing_contract.py' -v"
+          expected_failure: "ImportError: cannot import name 'landing_v3_columns' from 'src.contracts'"
+        green:
+          behavior: "Two readers over the v3 schema file, sharing the parsing of the v1 readers"
+          command: "python -m unittest discover -s tests -t . -p 'test_landing_contract.py' -v"
+        refactor:
+          rule: "One private function parses a contract file for both versions"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/contracts.py"
+        - "tests/test_landing_contract.py"
+      forbidden_files:
+        - "contracts/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/contracts.py"
+        - "tests/test_landing_contract.py"
+
+    - id: "1.2"
+      title: "The synthetic writer and generator write landing v3"
+      description: |
+        `write_landing_tables(directory, rows_by_table)` keeps its row-based interface, requires
+        `run_id` on every row, groups rows by run, writes
+        `landing/v3/<table>/run_date=<run start date>/run=<run_id>/part-0.parquet` for every
+        table of every run (zero-row files included) and `landing/v3/_commits/<run_id>.json` with
+        every contract commit field, true of the files (`row_counts`, `observed_dates`).
+        `run_started_at`, `outcome` and `is_replay` per run come from an optional `runs`
+        argument, defaulting to the run id's instant, `ok` and false. `generate_landing(directory,
+        seed)` assigns rows to runs by their instants and adds the scenarios: two live runs on one
+        day, a replay run re-deriving an old day with a newer `ingested_at`, an import run
+        (`import-<date>`) with records and no reports, a `failed` run, a run with no rows for one
+        table, and a listing whose chosen detail record lies in an earlier run than its latest
+        observation. FEATURE-001's existing generator tests are kept and adapted to the v3 layout.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 3
+      depends_on: ["1.1"]
+      branch: "feature/incremental-silver-v3/1.2-synthetic-v3"
+      commit_message: "feat(synthetic): write landing v3 runs and commits"
+      acceptance_criteria:
+        - "Every written file conforms to the v3 columns by DESCRIBE with hive_partitioning = false"
+        - "Every commit carries the contract's fields; its row_counts and observed_dates equal its files"
+        - "Every table has a file for every run, a zero-row file where a run has no rows"
+        - "Each named scenario is present, asserted per scenario"
+        - "The same seed gives equal files and commits; every listing id starts with 'syn-'"
+        - "A row without run_id raises ValueError naming the table"
+      tdd:
+        red:
+          test_file: "tests/test_synthetic_landing.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+          expected_failure: "Assertions fail because the writer produces landing/v1/<table>.parquet and no commits"
+        green:
+          behavior: "The v3 writer and the new scenarios"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+        refactor:
+          rule: "One small function per scenario, as in FEATURE-001"
+          command: "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -p 'test_synthetic_landing.py' -v"
+        - "python dev/tools/check_leaks.py"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "infra/**"
+      can_run_parallel_with: ["1.3", "2.3"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "tests/test_synthetic_landing.py"
+      notes: |
+        The Silver rule tests still use the v1 path until 1.2b. If the writer change breaks them
+        before 2.1 exists, keep a v1 file writer private to the test helpers of those tests for
+        the duration (1.2b removes it); the suite must stay green after every task.
+
+    - id: "1.3"
+      title: "Commits, the pending set and the runs per day (pure)"
+      description: |
+        `src/silver/commits.py`: a frozen `LandingCommit` parsed from commit JSON (contract,
+        version, digest, run id, run start, outcome, is_replay, row_counts, observed_dates,
+        written_at); `parse_commit(raw) -> LandingCommit` raising `LandingContractError` on a
+        missing field, a wrong contract or version, or a digest other than v3's;
+        `pending(commits, ingested) -> list[LandingCommit]` (commits whose run id is not ingested,
+        ordered by run_started_at then run_id); `days_of(commits) -> dict[table, set[date]]`;
+        `runs_for(days, known) -> dict[table, set[run_id]]` over pending and ingested runs.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.1"]
+      branch: "feature/incremental-silver-v3/1.3-commits"
+      commit_message: "feat(silver): landing v3 commits, the pending set and the runs per day"
+      acceptance_criteria:
+        - "Pending is commits minus ingested run ids; an empty ingest log makes every commit pending"
+        - "Pending order is by run_started_at, then run_id; an import- run sorts by its start, not its id"
+        - "days_of unions observed_dates per table; runs_for returns every known run touching a named day"
+        - "A missing field, a wrong version and a wrong digest each raise LandingContractError naming the run id"
+      tdd:
+        red:
+          test_file: "tests/test_silver_commits.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_commits.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.commits'"
+        green:
+          behavior: "Pure functions and one frozen dataclass over hand-written commit dicts"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_commits.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/commits.py"
+        - "tests/test_silver_commits.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["1.2", "2.3"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/commits.py"
+        - "tests/test_silver_commits.py"
+      files_to_modify: []
+
+    - id: "2.1"
+      title: "Landing v3 is read and checked per run"
+      description: |
+        `register_landing_v3(connection, location, runs_by_table, commits)` in
+        `src/silver/landing.py` registers `landing_<table>` views over exactly the named runs'
+        files per table, from a local directory or an `s3://` prefix (DuckDB `httpfs`; the
+        connection is configured by the caller). Before registering, per file: v3 columns by
+        DESCRIBE (`hive_partitioning = false`), row count equal to its commit's
+        `row_counts[table]`; per run: no nulls in key columns, unique keys within the run,
+        `listing_detail`/`listing_text` paired within the run. `listing_text` may be given a run
+        set different from the other tables. Failures raise `LandingContractError` with table,
+        run id and counts. The v1 `register_landing` stays until 1.2b has moved its tests.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.2", "1.3"]
+      branch: "feature/incremental-silver-v3/2.1-read-v3"
+      commit_message: "feat(silver): read and check landing v3 per run"
+      acceptance_criteria:
+        - "A conforming synthetic landing registers four views over exactly the named runs"
+        - "A file whose row count differs from its commit raises, naming table and run"
+        - "A wrong column type, a null key, a duplicate key within a run and an unpaired detail each raise"
+        - "listing_text can be registered over a different run set than the other tables"
+        - "No error message contains a row value"
+      tdd:
+        red:
+          test_file: "tests/test_silver_landing_v3.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_landing_v3.py' -v"
+          expected_failure: "ImportError: cannot import name 'register_landing_v3' from 'src.silver.landing'"
+        green:
+          behavior: "The v3 reader with the per-file and per-run checks"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_landing_v3.py' -v"
+        refactor:
+          rule: "Reuse the v1 rule tables for null and key checks, extended by run_id"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/landing.py"
+        - "tests/test_silver_landing_v3.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["2.3", "2.4"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "tests/test_silver_landing_v3.py"
+      files_to_modify:
+        - "src/silver/landing.py"
+
+    - id: "1.2b"
+      title: "FEATURE-001's rule tests move to v3 fixtures"
+      description: |
+        Migration without new behaviour. `test_silver_walk`, `_observation`, `_listing`,
+        `_listing_text`, `_redaction` and `_landing` build rows with the v3 writer (adding
+        `run_id`) and read through `register_landing_v3`; every assertion stays. Then the v1
+        `register_landing` and any temporary v1 test writer are removed. `build_tables` keeps
+        working on the `landing_<table>` views, so the SQL is untouched here.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 3
+      depends_on: ["2.1"]
+      branch: "feature/incremental-silver-v3/1.2b-migrate-rule-tests"
+      commit_message: "test(silver): FEATURE-001's rule tests run on landing v3"
+      acceptance_criteria:
+        - "Every FEATURE-001 rule test passes on v3 fixtures with its assertions unchanged"
+        - "The suite holds at least 83 tests"
+        - "Nothing in src/ reads landing v1 any more; contracts/landing/v1 stays pinned"
+      tdd: null
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/landing.py"
+        - "tests/test_silver_walk.py"
+        - "tests/test_silver_observation.py"
+        - "tests/test_silver_listing.py"
+        - "tests/test_silver_listing_text.py"
+        - "tests/test_silver_redaction.py"
+        - "tests/test_silver_landing.py"
+      forbidden_files:
+        - "src/silver/sql/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.3", "2.4"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/landing.py"
+        - "tests/test_silver_walk.py"
+        - "tests/test_silver_observation.py"
+        - "tests/test_silver_listing.py"
+        - "tests/test_silver_listing_text.py"
+        - "tests/test_silver_redaction.py"
+        - "tests/test_silver_landing.py"
+
+    - id: "2.2"
+      title: "The newest-sighting rule and Silver listing_detail"
+      description: |
+        `sql/newest_sighting.sql` builds views that keep, per table, the newest sighting across
+        runs: `observation` within `(source, area, source_listing_id, observed_date)` by latest
+        observed_at, then ingested_at, then run_started_at, then run_id; `listing_detail` and
+        `listing_text` within `(source, area, source_listing_id, observed_at)` by latest
+        ingested_at, then run_started_at, then run_id. `run_started_at` per run is joined in from
+        a registered `landing_runs` view (run_id, run_started_at). The existing statements read
+        these views; FEATURE-001's cross-area order is unchanged. `sql/listing_detail.sql` makes
+        a Silver table with every landing column plus run_id and transformation_version.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.2b"]
+      branch: "feature/incremental-silver-v3/2.2-newest-sighting"
+      commit_message: "feat(silver): the newest sighting across runs, and Silver listing_detail"
+      acceptance_criteria:
+        - "Two runs of one day with one listing in one area: observation keeps the later run's row"
+        - "A replay with the same observed_at and a newer ingested_at: listing_detail and listing_text keep the replay's row"
+        - "An import- run and a live run tied on observed_at and ingested_at resolve by run_started_at"
+        - "FEATURE-001's cross-area observation cases pass unchanged"
+        - "Silver listing_detail carries every landing listing_detail column plus run_id and transformation_version"
+      tdd:
+        red:
+          test_file: "tests/test_silver_newest_sighting.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_newest_sighting.py' -v"
+          expected_failure: "observation keeps two rows for the listing-day, and build_tables returns no listing_detail"
+        green:
+          behavior: "The newest_sighting views before the existing statements, and listing_detail.sql"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_newest_sighting.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/newest_sighting.sql"
+        - "src/silver/sql/listing_detail.sql"
+        - "src/silver/sql/observation.sql"
+        - "src/silver/sql/chosen_detail.sql"
+        - "src/silver/sql/listing_text.sql"
+        - "src/silver/landing.py"
+        - "tests/test_silver_newest_sighting.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["2.3", "2.4"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/sql/newest_sighting.sql"
+        - "src/silver/sql/listing_detail.sql"
+        - "tests/test_silver_newest_sighting.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "src/silver/sql/observation.sql"
+        - "src/silver/sql/chosen_detail.sql"
+        - "src/silver/sql/listing_text.sql"
+        - "src/silver/landing.py"
+
+    - id: "2.3"
+      title: "Partitioned tables, day replacement, upsert and delete in the sink"
+      description: |
+        `src/silver/sink.py` gains: `replace_days(catalog, namespace, name, rows, days,
+        properties)` creating a table partitioned by `identity(observed_date)` or evolving an
+        existing unpartitioned one with `update_spec()`, then `overwrite(rows,
+        overwrite_filter=In("observed_date", days))`; rows outside `days` raise `ValueError`.
+        `upsert_rows(catalog, namespace, name, rows, keys, delete_keys, properties)` upserting
+        on `keys` and deleting `delete_keys` in one transaction. The FEATURE-001 column-name check
+        applies to both. Snapshot properties carry `landing_run_count`, `landing_run_first`,
+        `landing_run_last`, the versions and the contract digest (L2).
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["1.1"]
+      branch: "feature/incremental-silver-v3/2.3-sink-days-upsert"
+      commit_message: "feat(silver): day partitions, day replacement and upsert in the sink"
+      acceptance_criteria:
+        - "replace_days creates a day-partitioned table and replaces exactly the named days"
+        - "An existing unpartitioned table is evolved once and keeps its earlier snapshots readable"
+        - "Rows outside the named days raise ValueError before any commit"
+        - "upsert_rows updates, inserts and deletes in one snapshot sequence of one transaction"
+        - "A list<string> column round-trips; a missing or extra column raises SilverSchemaError"
+      tdd:
+        red:
+          test_file: "tests/test_silver_sink.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+          expected_failure: "ImportError: cannot import name 'replace_days' from 'src.silver.sink'"
+        green:
+          behavior: "replace_days and upsert_rows over PyIceberg 0.12 against a SQLite catalog"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+        refactor:
+          rule: "The FEATURE-001 column check is one private function used by every writer"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sink.py"
+        - "tests/test_silver_sink.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["1.2", "1.3", "2.1", "1.2b", "2.2", "2.4"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sink.py"
+        - "tests/test_silver_sink.py"
+
+    - id: "2.4"
+      title: "The ingest log"
+      description: |
+        `src/silver/ingest.py`: `landing_ingest` with run_id, run_started_at, outcome, is_replay,
+        one observed_dates list column per table, commit_written_at, ingested_at,
+        transformation_version. `ingested_runs(catalog) -> dict[run_id, IngestedRun]` (observed
+        dates per table and run_started_at; empty when the table is absent).
+        `record_ingested(catalog, commits, now)` upserts on run_id. `outcome` and `is_replay` are
+        audit columns and no function reads them for a rule (L4).
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1
+      depends_on: ["1.3"]
+      branch: "feature/incremental-silver-v3/2.4-ingest-log"
+      commit_message: "feat(silver): the landing ingest log, upserted by run id"
+      acceptance_criteria:
+        - "An absent ingest table reads as empty"
+        - "Recording the same commits twice leaves one row per run_id"
+        - "ingested_runs returns observed dates per table and run_started_at per run"
+        - "A failed transaction leaves the log unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_ingest.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_ingest.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.ingest'"
+        green:
+          behavior: "The ingest table, its reader and its upserting writer"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_ingest.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/ingest.py"
+        - "tests/test_silver_ingest.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "1.2b", "2.2", "2.3"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/ingest.py"
+        - "tests/test_silver_ingest.py"
+      files_to_modify: []
+
+    - id: "3.1"
+      title: "Affected listings"
+      description: |
+        A pure function `affected_listings(previous, new) -> set[tuple[source, listing_id]]` over
+        two Arrow tables: Silver's rows of the replaced days read before the overwrite, and the
+        new rows. In `src/silver/rebuild.py` or a small `src/silver/affected.py`.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.3"]
+      branch: "feature/incremental-silver-v3/3.1-affected-listings"
+      commit_message: "feat(silver): the listings a replaced day affects"
+      acceptance_criteria:
+        - "The result is the union of both tables' (source, source_listing_id)"
+        - "A listing present in the previous rows and absent from the new ones is affected"
+      tdd:
+        red:
+          test_file: "tests/test_silver_affected.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_affected.py' -v"
+          expected_failure: "ImportError: cannot import name 'affected_listings'"
+        green:
+          behavior: "A pure union over two Arrow tables"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_affected.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/affected.py"
+        - "tests/test_silver_affected.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "1.2b", "2.2", "2.4"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/affected.py"
+        - "tests/test_silver_affected.py"
+      files_to_modify: []
+
+    - id: "3.2"
+      title: "listing and listing_text for the affected listings"
+      description: |
+        `listing.sql` reads Silver `observation` and Silver `listing_detail` (scanned with a row
+        filter on the affected ids and registered as DuckDB views) instead of landing, keeps
+        FEATURE-001's rules and adds the chosen record's run_id. `listing_text` is read from
+        landing for the chosen records' distinct run ids only (run_date from the ingest log's
+        run_started_at), joined on (run_id, area, source_listing_id, observed_at), redacted r1.
+        Both are written with `upsert_rows` on (source, source_listing_id); an affected listing
+        with no rows left is deleted from both.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 3
+      depends_on: ["2.2", "2.3", "2.4", "3.1"]
+      branch: "feature/incremental-silver-v3/3.2-listing-upsert"
+      commit_message: "feat(silver): recompute and upsert the affected listings"
+      acceptance_criteria:
+        - "listing for an affected id equals FEATURE-001's rule over that id's full Silver history, plus run_id"
+        - "The scenario whose chosen record sits in an earlier, already ingested run gets that run's text"
+        - "Only the chosen records' runs' listing_text files are read"
+        - "An unaffected listing's row is identical before and after"
+        - "Descriptions are redacted r1 and carry redaction_version 'r1'"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_incremental.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing_incremental.py' -v"
+          expected_failure: "ImportError: cannot import name 'update_listings' from 'src.silver.rebuild'"
+        green:
+          behavior: "update_listings(connection, catalog, landing, affected, ingested) with the two statements and the targeted text read"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_listing_incremental.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "python dev/tools/check_leaks.py"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "src/silver/landing.py"
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/listing_text.sql"
+        - "src/silver/sql/chosen_detail.sql"
+        - "tests/test_silver_listing_incremental.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "tests/test_silver_listing_incremental.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "src/silver/landing.py"
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/listing_text.sql"
+        - "src/silver/sql/chosen_detail.sql"
+
+    - id: "3.3"
+      title: "One run: incremental equals backfill"
+      description: |
+        `process_landing(connection, catalog, *, landing, mode, list_commits, now) ->
+        ProcessResult` in `src/silver/rebuild.py` composes one run: list commits, read the ingest
+        log, take the pending set (every commit in backfill), register the named runs, replace
+        walk, observation and listing_detail per day, update the affected listings, record the
+        ingest log last. `ProcessResult` reports pending, processed, days per table, affected
+        count and snapshot ids. FEATURE-001's whole `rebuild()` is replaced by the backfill mode;
+        `tests/test_silver_rebuild.py` moves to it with its assertions kept.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 3
+      depends_on: ["3.2"]
+      branch: "feature/incremental-silver-v3/3.3-incremental-equals-backfill"
+      commit_message: "feat(silver): one incremental run over pending landing commits"
+      acceptance_criteria:
+        - "Over the synthetic v3, commits one at a time, three at a time and all at once (backfill) give equal row sets per Silver table and equal ingest logs"
+        - "A run interrupted after the per-day commits and before the ingest log, then repeated, gives the same result"
+        - "A run with nothing pending writes nothing and reports zero pending"
+        - "A non-UTC session zone gives the same result"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_incremental.py' -v"
+          expected_failure: "ImportError: cannot import name 'process_landing' from 'src.silver.rebuild'"
+        green:
+          behavior: "process_landing composing 2.1-3.2 and the ingest log"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_incremental.py' -v"
+        refactor:
+          rule: "Remove FEATURE-001's whole-rebuild path once its test runs through the backfill mode"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "tests/test_silver_incremental.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_rebuild.py"
+
+    - id: "4.1"
+      title: "The command: modes, locations, metric"
+      description: |
+        `main(argv, *, s3_client=None, cloudwatch_client=None)`: `--landing <dir|s3://…>`,
+        `--catalog <name>`, `--mode incremental|backfill` (default incremental), `--metrics`.
+        With `s3://`, commits are listed and read through the injected S3 client (boto3 at the
+        composition root) and files are registered by their `s3://` paths after loading DuckDB
+        `httpfs` and creating a `credential_chain` secret. Prints pending, processed, days per
+        table and snapshot ids; "nothing pending" when idle. With `--metrics`, publishes
+        `PendingRuns` (after the run) to namespace `vlc-housing-silver`. Exit 0, 1 on
+        LandingContractError or SilverSchemaError before any commit, 2 on usage errors.
+        `tests/test_silver_cli.py` moves to v3 with its cases kept.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["3.3"]
+      branch: "feature/incremental-silver-v3/4.1-cli"
+      commit_message: "feat(silver): incremental and backfill modes on the command line"
+      acceptance_criteria:
+        - "Incremental with nothing pending exits 0 and prints 'nothing pending'"
+        - "Backfill processes every commit"
+        - "s3:// listing and reading go through the injected fake S3 client"
+        - "--metrics publishes PendingRuns through the injected fake CloudWatch client"
+        - "Exit codes 0, 1 and 2 as specified"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_cli.py' -v"
+          expected_failure: "argparse exits 2 on the unknown --mode option"
+        green:
+          behavior: "The CLI composing process_landing with its boundaries"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_cli.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["4.2"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "4.2"
+      title: "The queue consumer: adopt a running task or start one"
+      description: |
+        `src/silver/consumer.py`, boto3 only (never DuckDB or PyIceberg):
+        `handler(event, context, *, ecs=None, now=None)`. Configuration from environment
+        variables: cluster, task definition family and ARN, subnets, security group,
+        assign-public-ip flag (R2-L2). On every invocation, whatever the batch size: list the
+        cluster's RUNNING tasks of the Silver family (`ecs:ListTasks`); if one exists, adopt it
+        (wait for it) and do not start another (R2-M1); otherwise `RunTask` once with
+        `--mode incremental --metrics` and the network configuration. Poll `DescribeTasks` until
+        STOPPED; return on exit code 0; raise on a non-zero exit code or a task that stopped
+        without starting; raise when `context.get_remaining_time_in_millis()` falls below a
+        margin while the task still runs, leaving the task running (the redelivery adopts it).
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: []
+      branch: "feature/incremental-silver-v3/4.2-consumer"
+      commit_message: "feat(silver): queue consumer that adopts a running task or starts one"
+      acceptance_criteria:
+        - "With no task running, one RunTask with the configured network and --mode incremental"
+        - "With a task running, no RunTask; the handler waits for the running task"
+        - "A batch of ten messages still starts at most one task"
+        - "Exit code 0 returns; non-zero raises; a task that never started raises"
+        - "Near the Lambda deadline with the task still running, it raises and does not stop the task"
+        - "The module imports nothing but the standard library and boto3"
+      tdd:
+        red:
+          test_file: "tests/test_silver_consumer.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_consumer.py' -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.consumer'"
+        green:
+          behavior: "The handler over a fake ECS client and a fake Lambda context"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_consumer.py' -v"
+        refactor:
+          rule: "None expected"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/consumer.py"
+        - "tests/test_silver_consumer.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: ["1.1", "1.2", "1.3", "2.1", "1.2b", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "4.1"]
+      reversible: true
+      rollback: "Revert the task commit"
+      files_to_create:
+        - "src/silver/consumer.py"
+        - "tests/test_silver_consumer.py"
+      files_to_modify: []
+
+    - id: "5.1"
+      title: "Dockerfile, .dockerignore and the image workflow"
+      description: |
+        Validation-first. `Dockerfile`: python:3.12-slim, requirements.txt, src/ and contracts/,
+        DuckDB `httpfs` and `aws` pre-installed as the runtime user (L1), non-root,
+        ENTRYPOINT ["python", "-m", "src.silver.rebuild"]. `.dockerignore` excludes .venv, tests,
+        dev, infra, .git and every *.tfvars. `.github/workflows/image.yml`: build on every pull
+        request without pushing; on push to main, build linux/arm64 and push to GHCR as
+        ghcr.io/<owner>/vlc-housing-oracle-silver:<sha> and :latest with GITHUB_TOKEN
+        (packages: write); no AWS step.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.5
+      depends_on: ["4.1"]
+      branch: "feature/incremental-silver-v3/5.1-image"
+      commit_message: "build: the Silver image and its workflow"
+      acceptance_criteria:
+        - "A local linux/arm64 build over the synthetic landing runs --mode backfill with a SQLite catalog and exits 0"
+        - "The extensions load with --network none"
+        - "The image runs as a non-root UID and contains no tests/, dev/, infra/ or tfvars"
+        - "The workflow has no AWS credential and pushes only on main"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python -m unittest discover -s tests -t . -p 'test_tooling_pins.py' -v"
+      allowed_files:
+        - "Dockerfile"
+        - ".dockerignore"
+        - ".github/workflows/image.yml"
+      forbidden_files:
+        - "src/**"
+        - "infra/**"
+      can_run_parallel_with: ["4.2"]
+      reversible: true
+      rollback: "Revert the task commit; delete the GHCR package version if one was pushed"
+      files_to_create:
+        - "Dockerfile"
+        - ".dockerignore"
+        - ".github/workflows/image.yml"
+      files_to_modify: []
+
+    - id: "5.2"
+      title: "Terraform: cluster, task definition, roles, logs, security group"
+      description: |
+        Validation-first. `infra/silver/ecs.tf`: ECS cluster `vlc-housing-silver`; task
+        definition (ARM64, 1 vCPU / 2 GB, image `var.silver_image` as an exact SHA tag,
+        environment PYICEBERG_CATALOG__SILVER__TYPE=glue,
+        PYICEBERG_CATALOG__SILVER__GLUE__REGION, AWS_REGION, command `--landing
+        s3://${var.lake_bucket}/landing/v3 --catalog silver --mode incremental --metrics`); task
+        role with the plan's least-privilege policy; execution role (logs only); log group (30
+        days); egress-only security group in the default VPC. `variables.tf` gains silver_image.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["5.1"]
+      branch: "feature/incremental-silver-v3/5.2-ecs"
+      commit_message: "feat(infra): the Silver task, its roles and its logs"
+      acceptance_criteria:
+        - "terraform fmt -check and validate pass"
+        - "No resource policy uses a wildcard resource except where AWS requires it"
+        - "No account id, bucket name or email in a committed file; the leak guard passes"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "infra/silver/ecs.tf"
+        - "infra/silver/variables.tf"
+        - "infra/silver/main.tf"
+      forbidden_files:
+        - "infra/silver/terraform.tfvars"
+        - "infra/silver/backend.tfvars"
+        - "src/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; nothing is applied in this task"
+      files_to_create:
+        - "infra/silver/ecs.tf"
+      files_to_modify:
+        - "infra/silver/variables.tf"
+        - "infra/silver/main.tf"
+
+    - id: "5.3"
+      title: "Terraform: queue, consumer, trigger, catch-up, alarms, failure mail"
+      description: |
+        Validation-first. `queue.tf`: FIFO queue `vlc-housing-silver.fifo` with content-based
+        deduplication and a 16-minute visibility timeout; its FIFO dead-letter queue with
+        maxReceiveCount 3; a queue policy allowing sqs:SendMessage to events.amazonaws.com with
+        aws:SourceArn equal to the commit rule (R2-L1); the Lambda from src/silver/consumer.py
+        zipped by archive_file, reserved concurrency 1, 15-minute timeout, the R2-L2 environment,
+        a role with ecs:ListTasks, ecs:RunTask, ecs:DescribeTasks, iam:PassRole on the task's two
+        roles, SQS receive/delete and logs; an event source mapping with batch_size 10 and **no
+        batching window** (R2-M2). `trigger.tf`: the EventBridge rule (aws.s3, Object Created,
+        lake bucket, key prefix landing/v3/_commits/) targeting the queue with
+        message_group_id "silver"; the daily Scheduler entry at 05:30 UTC sending one message
+        with an execution role holding sqs:SendMessage; `trigger_enabled` and
+        `catch_up_enabled`, default false. `alerts.tf`: SNS topic and email subscription
+        (var.alert_email), the stopped-task rule, alarms on the dead-letter depth and on
+        PendingRuns > 0 for six hours.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["4.2", "5.2"]
+      branch: "feature/incremental-silver-v3/5.3-queue-trigger-alerts"
+      commit_message: "feat(infra): serialized Silver trigger through an SQS FIFO queue"
+      acceptance_criteria:
+        - "terraform fmt -check and validate pass"
+        - "The event source mapping sets no maximum_batching_window_in_seconds"
+        - "The queue policy allows only events.amazonaws.com from the commit rule"
+        - "The rule pattern matches a synthesised landing/v3/_commits/ event and rejects a silver/ data file event (aws events test-event-pattern, recorded by the operator in 6.1)"
+        - "Both starters default to disabled; the leak guard passes"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "infra/silver/queue.tf"
+        - "infra/silver/trigger.tf"
+        - "infra/silver/alerts.tf"
+        - "infra/silver/variables.tf"
+        - "infra/silver/.terraform.lock.hcl"
+      forbidden_files:
+        - "infra/silver/terraform.tfvars"
+        - "infra/silver/backend.tfvars"
+        - "src/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; nothing is applied in this task"
+      files_to_create:
+        - "infra/silver/queue.tf"
+        - "infra/silver/trigger.tf"
+        - "infra/silver/alerts.tf"
+      files_to_modify:
+        - "infra/silver/variables.tf"
+        - "infra/silver/.terraform.lock.hcl"
+
+    - id: "6.1"
+      title: "First runs in AWS"
+      description: |
+        Validation-first, operator, with commands prepared by the Implementer: set the GHCR
+        package public; apply with both starters off; one manual `run-task --mode backfill`;
+        compare every Silver table's row count with a local backfill of the same landing and
+        check that the ingest log holds every commit; enable the starters; after the next
+        collection run is landed, check that its commit reached the queue, that the consumer
+        started one task, that the task processed exactly that run and that PendingRuns reads 0;
+        send two messages within a minute and check that one task ran; record the
+        test-event-pattern results. Record counts and ids only in the feature plan's progress
+        log.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["5.3"]
+      branch: "feature/incremental-silver-v3/6.1-first-runs"
+      commit_message: "docs(silver): first backfill and first queued run in AWS"
+      acceptance_criteria:
+        - "The backfill's per-table row counts equal a local backfill of the same landing"
+        - "One queued run processed exactly its commit; PendingRuns reads 0"
+        - "Two messages within a minute started one task"
+        - "The progress log records counts and ids only"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/FEATURE-004-incremental-silver-from-landing-v3.md"
+      forbidden_files:
+        - "src/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Disable both starters (apply with false); roll Silver tables back by snapshot id"
+      files_to_create: []
+      files_to_modify:
+        - "dev/plans/FEATURE-004-incremental-silver-from-landing-v3.md"
+
+    - id: "6.2"
+      title: "Runbook, README and contract notes"
+      description: |
+        Validation-first. `docs/silver-rebuild.md` becomes the v3 runbook: modes, the ingest log,
+        the queue and why it serializes, why the message body is never read, adopt-or-start, the
+        catch-up, the alarms, the dead-letter procedure (read the log, fix, purge, never
+        redrive), disabling the event source mapping before a manual backfill, pinning snapshots,
+        rolling back, the equality check. README and CLAUDE.md say Silver follows landing v3;
+        FEATURE-001's plan notes that its v1 path is retired.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.5
+      depends_on: ["6.1"]
+      branch: "feature/incremental-silver-v3/6.2-runbook"
+      commit_message: "docs(silver): the incremental Silver runbook"
+      acceptance_criteria:
+        - "The runbook covers every item in the description with placeholders only"
+        - "README and CLAUDE.md describe Silver as following landing v3"
+        - "The leak guard and the workflow check pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+        - "CLAUDE.md"
+        - "dev/plans/FEATURE-001-silver-rebuild.md"
+      forbidden_files:
+        - "src/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the documentation commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+        - "CLAUDE.md"
+        - "dev/plans/FEATURE-001-silver-rebuild.md"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/incremental-silver-v3/integration"
+    task_branch_strategy: |
+      Create the integration branch from main. A task without dependencies (1.1, 4.2) starts from
+      the integration branch. A dependent task starts from the integration branch after all of its
+      depends_on tasks are merged into it. Tasks touching the same file are never run in parallel
+      (src/silver/rebuild.py: 2.2, 3.2, 3.3, 4.1; src/silver/landing.py: 2.1, 1.2b, 2.2, 3.2).
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in dependency order (1.1, 1.3, 2.3, 2.4, 4.2, 1.2, 2.1, 1.2b, 2.2, 3.1, 3.2,
+      3.3, 4.1, 5.1, 5.2, 5.3, 6.1, 6.2), never rewriting history, and run validation.final_commands
+      there.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "fix", "test", "docs", "refactor", "chore", "build"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin"
+    final_pr_title: "feat(silver): incremental Silver from landing v3, run by AWS"
+    final_pr_description: |
+      Implements FEATURE-004. See dev/reviews/REVIEW-FEATURE-004.md (round 2, approved) for context.
+
+  notes:
+    - "PyIceberg 0.12 rebases and retries conflicting commits; never write a test or a branch that expects CommitFailedException."
+    - "The consumer's adopt-or-start rule is what keeps one task at a time when an invocation times out or crashes; keep it in every refactor."
+    - "FIFO event source mappings do not support a batching window; Terraform validate does not catch it, apply would."
+    - "The queue message body is never read; the work is always the set difference between commits and the ingest log."
+    - "infra/silver/terraform.tfvars and backend.tfvars hold real values locally; never stage, print or edit them."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
