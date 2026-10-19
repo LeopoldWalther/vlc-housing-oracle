@@ -516,7 +516,7 @@ technical_plan:
         run_started_at), joined on (run_id, area, source_listing_id, observed_at), redacted r1.
         Both are written with `upsert_rows` on (source, source_listing_id); an affected listing
         with no rows left is deleted from both.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["2.2", "2.3", "2.4", "3.1"]

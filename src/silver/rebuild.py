@@ -7,7 +7,7 @@ Run from the repository root::
 
 import argparse
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,10 +15,12 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 from pyiceberg.catalog import Catalog, load_catalog
+from pyiceberg.expressions import In
 
 from src.contracts import landing_v1_sha256
-from src.silver.landing import LandingContractError, register_landing
-from src.silver.sink import SilverSchemaError, write_silver_tables
+from src.silver.affected import ListingKey
+from src.silver.landing import LandingContractError, register_landing, register_landing_v3
+from src.silver.sink import SilverSchemaError, upsert_rows, write_silver_tables
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -31,6 +33,9 @@ SILVER_TABLES = ("walk", "observation", "listing_detail", "listing", "listing_te
 
 # Intermediate views shared by several Silver statements, created before them.
 SHARED_VIEWS = ("chosen_detail",)
+
+# Listings are upserted on this key in listing and listing_text.
+LISTING_KEY = ["source", "source_listing_id"]
 
 
 @dataclass(frozen=True)
@@ -76,10 +81,7 @@ def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
     session runs in UTC because DuckDB exports instants in the session zone and Iceberg accepts
     only UTC.
     """
-    connection.execute("SET TimeZone = 'UTC'")
-    connection.execute(f"SET VARIABLE transformation_version = '{TRANSFORMATION_VERSION}'")
-    connection.execute(f"SET VARIABLE redaction_version = '{REDACTION_VERSION}'")
-    connection.execute(_statement("redact"))
+    _prepare(connection)
     connection.execute(_statement("newest_sighting"))
     for name in SHARED_VIEWS:
         connection.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS {_statement(name)}")
@@ -89,6 +91,89 @@ def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
         connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS {statement}")
         tables[name] = connection.table(f"silver_{name}").to_arrow_table()
     return tables
+
+
+def update_listings(
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    *,
+    landing: str,
+    affected: set[ListingKey],
+    run_started: Mapping[str, datetime],
+    properties: Mapping[str, str],
+) -> dict[str, int | None]:
+    """Recompute ``listing`` and ``listing_text`` for the affected listings and upsert them.
+
+    History comes from Silver, not landing: the affected ids' rows of Silver ``observation`` and
+    ``listing_detail`` are registered under the names FEATURE-001's statements read, so the rules
+    run unchanged. Silver keeps no text, so the chosen records' text is read from landing, from
+    exactly the runs that hold a chosen record. An affected listing with no rows left is deleted.
+    Run this after the day partitions of the same run are replaced.
+    """
+    if not affected:
+        return {}
+    _prepare(connection)
+    keys = pa.table(
+        {
+            "source": [source for source, _ in sorted(affected)],
+            "source_listing_id": [listing_id for _, listing_id in sorted(affected)],
+        }
+    )
+    connection.register("affected_keys", keys)
+    for name, view in (
+        ("observation", "affected_observation"),
+        ("listing_detail", "affected_detail"),
+    ):
+        scan = catalog.load_table(f"{NAMESPACE}.{name}").scan(
+            row_filter=In("source_listing_id", sorted({lid for _, lid in affected}))
+        )
+        connection.register(view, scan.to_arrow())
+    connection.execute(
+        "CREATE OR REPLACE TEMP TABLE silver_observation AS SELECT * FROM affected_observation "
+        "SEMI JOIN affected_keys USING (source, source_listing_id)"
+    )
+    connection.execute(
+        "CREATE OR REPLACE TEMP VIEW newest_listing_detail AS "
+        "SELECT * EXCLUDE (transformation_version) FROM affected_detail "
+        "SEMI JOIN affected_keys USING (source, source_listing_id)"
+    )
+    connection.execute(
+        f"CREATE OR REPLACE TEMP VIEW chosen_detail AS {_statement('chosen_detail')}"
+    )
+    listing = connection.sql(_statement("listing")).to_arrow_table()
+
+    chosen_runs = {
+        row[0] for row in connection.sql("SELECT DISTINCT run_id FROM chosen_detail").fetchall()
+    }
+    register_landing_v3(
+        connection,
+        landing,
+        {"listing_text": chosen_runs},
+        {run_id: run_started[run_id] for run_id in chosen_runs},
+        {},
+    )
+    connection.execute(
+        "CREATE OR REPLACE TEMP VIEW newest_listing_text AS SELECT * FROM landing_listing_text"
+    )
+    listing_text = connection.sql(_statement("listing_text")).to_arrow_table()
+
+    snapshot_ids: dict[str, int | None] = {}
+    for name, rows in (("listing", listing), ("listing_text", listing_text)):
+        present = set(
+            zip(rows["source"].to_pylist(), rows["source_listing_id"].to_pylist(), strict=True)
+        )
+        snapshot_ids[name] = upsert_rows(
+            catalog, NAMESPACE, name, rows, LISTING_KEY, affected - present, properties
+        )
+    return snapshot_ids
+
+
+def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
+    # DuckDB exports instants in the session zone and Iceberg accepts only UTC.
+    connection.execute("SET TimeZone = 'UTC'")
+    connection.execute(f"SET VARIABLE transformation_version = '{TRANSFORMATION_VERSION}'")
+    connection.execute(f"SET VARIABLE redaction_version = '{REDACTION_VERSION}'")
+    connection.execute(_statement("redact"))
 
 
 def _statement(name: str) -> str:
