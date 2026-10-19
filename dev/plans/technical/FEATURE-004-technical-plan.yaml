@@ -426,7 +426,7 @@ technical_plan:
         dates per table and run_started_at; empty when the table is absent).
         `record_ingested(catalog, commits, now)` upserts on run_id. `outcome` and `is_replay` are
         audit columns and no function reads them for a rule (L4).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["1.3"]
