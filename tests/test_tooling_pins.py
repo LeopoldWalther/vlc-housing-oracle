@@ -57,6 +57,21 @@ class TestToolingPins(unittest.TestCase):
         ):
             self.assertIn(command, workflow, f"the workflow does not run: {command}")
 
+    def test_every_job_runs_on_a_pinned_runner_image(self) -> None:
+        # A moving image changes the toolchain under an unchanged commit: on 2026-10-19
+        # ubuntu-latest became Ubuntu 26.04, which has no build of the pinned Python, and every
+        # pull request turned red.
+        self.assertTrue(WORKFLOW.is_file(), f"{WORKFLOW} is missing")
+
+        runners = re.findall(
+            r"^\s*runs-on:\s*(\S+)\s*$", WORKFLOW.read_text(encoding="utf-8"), re.M
+        )
+
+        self.assertTrue(runners, "the workflow declares no runs-on")
+        for runner in runners:
+            with self.subTest(runner=runner):
+                self.assertNotIn("latest", runner, "pin the runner image, e.g. ubuntu-24.04")
+
 
 if __name__ == "__main__":
     unittest.main()
