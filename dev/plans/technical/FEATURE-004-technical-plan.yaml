@@ -470,7 +470,7 @@ technical_plan:
         A pure function `affected_listings(previous, new) -> set[tuple[source, listing_id]]` over
         two Arrow tables: Silver's rows of the replaced days read before the overwrite, and the
         new rows. In `src/silver/rebuild.py` or a small `src/silver/affected.py`.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.3"]
