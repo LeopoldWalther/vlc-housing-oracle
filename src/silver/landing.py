@@ -57,14 +57,21 @@ def register_landing(connection: duckdb.DuckDBPyConnection, directory: Path) -> 
         _check_columns(connection, table, path, columns)
         view = f"landing_{table}"
         literal = str(path).replace("'", "''")
+        # Transitional, until the v1 path is removed: v1 reads as one pseudo-run, so the
+        # statements written for landing v3 run over it unchanged.
         connection.execute(
-            f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet('{literal}')"
+            f"CREATE OR REPLACE VIEW {view} AS "
+            f"SELECT source, 'v1' AS run_id, * EXCLUDE (source) FROM read_parquet('{literal}')"
         )
         _check_not_null(connection, table, view)
         if table in UNIQUE_KEYS:
             _check_unique(connection, table, view, UNIQUE_KEYS[table])
     _check_paired(connection, "listing_detail", "listing_text")
     _check_paired(connection, "listing_text", "listing_detail")
+    connection.execute(
+        "CREATE OR REPLACE TEMP VIEW landing_runs AS "
+        "SELECT 'v1' AS run_id, NULL::TIMESTAMPTZ AS run_started_at"
+    )
 
 
 def _check_columns(

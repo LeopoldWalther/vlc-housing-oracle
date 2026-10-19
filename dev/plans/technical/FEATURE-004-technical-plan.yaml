@@ -316,7 +316,7 @@ technical_plan:
         a registered `landing_runs` view (run_id, run_started_at). The existing statements read
         these views; FEATURE-001's cross-area order is unchanged. `sql/listing_detail.sql` makes
         a Silver table with every landing column plus run_id and transformation_version.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2b"]

@@ -5,7 +5,7 @@
 SELECT
     *,
     getvariable('transformation_version') AS transformation_version
-FROM landing_observation
+FROM newest_observation
 QUALIFY row_number() OVER (
     PARTITION BY source, source_listing_id, observed_date
     ORDER BY
