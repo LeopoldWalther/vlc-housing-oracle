@@ -26,7 +26,7 @@ from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
-from src.silver.sink import SilverSchemaError, replace_days, upsert_rows
+from src.silver.sink import SilverSchemaError, replace_days, upsert_rows, write_silver_tables
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -85,8 +85,9 @@ def process_landing(
     """
     if mode not in ("incremental", "backfill"):
         raise ValueError(f"unknown mode {mode!r}")
+    backfill = mode == "backfill"
     commits = list_commits()
-    ingested = {} if mode == "backfill" else ingested_runs(catalog, NAMESPACE)
+    ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
     todo = pending(commits, set(ingested))
     if not todo:
         return ProcessResult(0, (), {}, 0, {})
@@ -117,17 +118,33 @@ def process_landing(
         if name in ("observation", "listing_detail"):
             previous.append(_silver_rows_of_days(catalog, name, named))
             new.append(rows)
-        snapshot_ids[name] = replace_days(catalog, NAMESPACE, name, rows, named, properties)
+        snapshot_ids[name] = replace_days(
+            catalog, NAMESPACE, name, rows, named, properties, allow_new_columns=backfill
+        )
 
     affected = set().union(*(affected_listings(p, n) for p, n in zip(previous, new, strict=True)))
-    snapshot_ids |= update_listings(
-        connection,
-        catalog,
-        landing=landing,
-        affected=affected,
-        run_started=run_started,
-        properties=properties,
-    )
+    if backfill:
+        # Every listing is affected, so the whole tables are written: this is also the only path
+        # that may add a column to them (an upsert cannot, on files that predate it).
+        listing, listing_text = _compute_listings(
+            connection, catalog, landing=landing, affected=affected, run_started=run_started
+        )
+        snapshot_ids |= write_silver_tables(
+            catalog,
+            NAMESPACE,
+            {"listing": listing, "listing_text": listing_text},
+            properties,
+            allow_new_columns=True,
+        )
+    else:
+        snapshot_ids |= update_listings(
+            connection,
+            catalog,
+            landing=landing,
+            affected=affected,
+            run_started=run_started,
+            properties=properties,
+        )
     record_ingested(catalog, NAMESPACE, todo, now(), TRANSFORMATION_VERSION)
     return ProcessResult(
         pending=len(todo),
@@ -204,6 +221,29 @@ def update_listings(
     """
     if not affected:
         return {}
+    listing, listing_text = _compute_listings(
+        connection, catalog, landing=landing, affected=affected, run_started=run_started
+    )
+    snapshot_ids: dict[str, int | None] = {}
+    for name, rows in (("listing", listing), ("listing_text", listing_text)):
+        present = set(
+            zip(rows["source"].to_pylist(), rows["source_listing_id"].to_pylist(), strict=True)
+        )
+        snapshot_ids[name] = upsert_rows(
+            catalog, NAMESPACE, name, rows, LISTING_KEY, affected - present, properties
+        )
+    return snapshot_ids
+
+
+def _compute_listings(
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    *,
+    landing: str,
+    affected: set[ListingKey],
+    run_started: Mapping[str, datetime],
+) -> tuple[pa.Table, pa.Table]:
+    """``listing`` and ``listing_text`` rows of the affected listings, from Silver's history."""
     _prepare(connection)
     keys = pa.table(
         {
@@ -248,16 +288,7 @@ def update_listings(
         "CREATE OR REPLACE TEMP VIEW newest_listing_text AS SELECT * FROM landing_listing_text"
     )
     listing_text = connection.sql(_statement("listing_text")).to_arrow_table()
-
-    snapshot_ids: dict[str, int | None] = {}
-    for name, rows in (("listing", listing), ("listing_text", listing_text)):
-        present = set(
-            zip(rows["source"].to_pylist(), rows["source_listing_id"].to_pylist(), strict=True)
-        )
-        snapshot_ids[name] = upsert_rows(
-            catalog, NAMESPACE, name, rows, LISTING_KEY, affected - present, properties
-        )
-    return snapshot_ids
+    return listing, listing_text
 
 
 def _prepare(connection: duckdb.DuckDBPyConnection) -> None:

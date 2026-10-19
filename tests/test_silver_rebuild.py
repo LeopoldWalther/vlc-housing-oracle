@@ -17,6 +17,7 @@ from src.silver.rebuild import (
     local_commits,
     process_landing,
 )
+from src.silver.sink import SilverSchemaError, write_silver_tables
 from src.synthetic.landing import generate_landing_v3
 
 STARTED_AT = datetime(2026, 10, 8, 6, 0, tzinfo=UTC)
@@ -108,6 +109,52 @@ class TestBackfill(unittest.TestCase):
         for table in SILVER_TABLES:
             with self.subTest(table=table):
                 self.assertEqual(first[table], self.scan(table))
+
+    def feature_001_tables(self) -> None:
+        """Leave the catalog as FEATURE-001 left it in AWS: no run_id, no listing_detail, unpartitioned."""
+        self.run_backfill()
+        old = {}
+        for table in ("walk", "observation", "listing", "listing_text"):
+            rows = self.catalog.load_table(f"{NAMESPACE}.{table}").scan().to_arrow()
+            old[table] = rows.drop_columns([c for c in ("run_id",) if c in rows.schema.names])
+        for table in (*SILVER_TABLES, "landing_ingest"):
+            self.catalog.drop_table(f"{NAMESPACE}.{table}")
+        write_silver_tables(self.catalog, NAMESPACE, old, {"transformation_version": "silver-v1"})
+
+    def test_a_backfill_over_feature_001_tables_adds_the_new_columns(self) -> None:
+        self.run_backfill()
+        expected = {table: self.scan(table) for table in SILVER_TABLES}
+        self.feature_001_tables()
+        old_snapshot = (
+            self.catalog.load_table(f"{NAMESPACE}.listing").current_snapshot().snapshot_id
+        )
+
+        self.run_backfill()
+
+        for table in SILVER_TABLES:
+            with self.subTest(table=table):
+                self.assertEqual(expected[table], self.scan(table))
+        old = (
+            self.catalog.load_table(f"{NAMESPACE}.listing")
+            .scan(snapshot_id=old_snapshot)
+            .to_arrow()
+        )
+        self.assertNotIn("run_id", old.schema.names)
+
+    def test_an_incremental_run_over_feature_001_tables_is_refused(self) -> None:
+        self.feature_001_tables()
+
+        with self.assertRaises(SilverSchemaError):
+            connection = duckdb.connect()
+            self.addCleanup(connection.close)
+            process_landing(
+                connection,
+                self.catalog,
+                landing=str(self.landing),
+                mode="incremental",
+                list_commits=lambda: local_commits(self.landing),
+                now=lambda: STARTED_AT,
+            )
 
 
 if __name__ == "__main__":

@@ -212,5 +212,83 @@ class TestUpsertRows(unittest.TestCase):
             self.upsert("SELECT 'syn' AS source, 'syn-1' AS source_listing_id, 1::INT AS price_eur")
 
 
+OLD_SHAPE = "SELECT 'syn' AS source, 'syn-1' AS source_listing_id, DATE '2026-10-01' + i::INT AS observed_date, i::INT AS price_eur FROM range(3) t(i)"
+NEW_SHAPE = "SELECT 'syn' AS source, 'r1' AS run_id, 'syn-1' AS source_listing_id, DATE '2026-10-01' + i::INT AS observed_date, (i + 10)::INT AS price_eur, ['n']::VARCHAR[] AS orientation FROM range(3) t(i)"
+ALL_DAYS = {date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 3)}
+
+
+class TestAllowNewColumns(unittest.TestCase):
+    """FEATURE-001's tables lack run_id; only a deliberate backfill may add it."""
+
+    def setUp(self) -> None:
+        warehouse = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.catalog = SqlCatalog(
+            "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
+        )
+        self.first = write_silver_tables(
+            self.catalog, NAMESPACE, {"observation": arrow(OLD_SHAPE)}, PROPERTIES
+        )["observation"]
+
+    def table(self):
+        return self.catalog.load_table(f"{NAMESPACE}.observation")
+
+    def test_new_columns_are_refused_by_default(self) -> None:
+        with self.assertRaises(SilverSchemaError):
+            replace_days(
+                self.catalog, NAMESPACE, "observation", arrow(NEW_SHAPE), ALL_DAYS, PROPERTIES
+            )
+
+    def test_a_day_replacement_adds_them_in_place_and_keeps_old_snapshots(self) -> None:
+        replace_days(
+            self.catalog,
+            NAMESPACE,
+            "observation",
+            arrow(NEW_SHAPE),
+            ALL_DAYS,
+            PROPERTIES,
+            allow_new_columns=True,
+        )
+
+        table = self.table()
+        self.assertEqual(arrow(NEW_SHAPE).schema.names, [f.name for f in table.schema().fields])
+        self.assertEqual({"r1"}, set(table.scan().to_arrow().column("run_id").to_pylist()))
+        self.assertEqual(["observed_date"], [f.name for f in table.spec().fields])
+        old = table.scan(snapshot_id=self.first).to_arrow()
+        self.assertEqual(3, old.num_rows)
+        self.assertEqual([0, 1, 2], sorted(old.column("price_eur").to_pylist()))
+
+    def test_a_whole_table_write_adds_them_too(self) -> None:
+        write_silver_tables(
+            self.catalog,
+            NAMESPACE,
+            {"observation": arrow(NEW_SHAPE)},
+            PROPERTIES,
+            allow_new_columns=True,
+        )
+
+        self.assertEqual(
+            arrow(NEW_SHAPE).schema.names, [f.name for f in self.table().schema().fields]
+        )
+
+    def test_a_removed_or_retyped_column_is_still_refused_and_changes_nothing(self) -> None:
+        before = [f.name for f in self.table().schema().fields]
+        refused = {
+            "removed column": "SELECT 'syn' AS source, 'r1' AS run_id, 'syn-1' AS source_listing_id, DATE '2026-10-01' AS observed_date",
+            "changed type": "SELECT 'syn' AS source, 'r1' AS run_id, 'syn-1' AS source_listing_id, DATE '2026-10-01' AS observed_date, 1::BIGINT AS price_eur",
+        }
+        for case, select in refused.items():
+            with self.subTest(case=case), self.assertRaises(SilverSchemaError):
+                replace_days(
+                    self.catalog,
+                    NAMESPACE,
+                    "observation",
+                    arrow(select),
+                    {date(2026, 10, 1)},
+                    PROPERTIES,
+                    allow_new_columns=True,
+                )
+            self.assertEqual(before, [f.name for f in self.table().schema().fields])
+
+
 if __name__ == "__main__":
     unittest.main()
