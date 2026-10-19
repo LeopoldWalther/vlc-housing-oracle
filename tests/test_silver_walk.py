@@ -9,9 +9,37 @@ import duckdb
 import pyarrow as pa
 
 from src.contracts import landing_v1_columns
-from src.silver.landing import register_landing
+from src.silver.landing import register_landing_v3
 from src.silver.rebuild import build_tables
-from src.synthetic.landing import write_landing_tables
+from src.synthetic.landing import write_landing_v3
+
+# One synthetic collection run: the FEATURE-001 rules are checked on landing v3, as Silver reads it.
+RUN_ID = "20261001T060000Z"
+RUN_STARTED = datetime(2026, 10, 1, 6, 0, tzinfo=UTC)
+LANDING_TABLES = ("walk", "observation", "listing_detail", "listing_text")
+
+
+def write_one_run(directory: Path, rows_by_table: dict) -> None:
+    rows = {
+        table: [{"run_id": RUN_ID} | dict(row) for row in table_rows]
+        for table, table_rows in rows_by_table.items()
+    }
+    write_landing_v3(directory, rows, runs={RUN_ID: {"run_started_at": RUN_STARTED}})
+
+
+def register_one_run(connection: duckdb.DuckDBPyConnection, directory: Path) -> None:
+    register_landing_v3(
+        connection,
+        str(directory),
+        dict.fromkeys(LANDING_TABLES, {RUN_ID}),
+        {RUN_ID: RUN_STARTED},
+        {},
+    )
+
+
+def run_file(directory: Path, table: str) -> Path:
+    return directory / table / f"run_date={RUN_STARTED.date()}" / f"run={RUN_ID}" / "part-0.parquet"
+
 
 RUN_START = datetime(2026, 10, 1, 6, 0, tzinfo=UTC)
 RUN_END = datetime(2026, 10, 1, 6, 40, tzinfo=UTC)
@@ -57,10 +85,10 @@ REPORTS = [
 class TestSilverWalk(unittest.TestCase):
     def setUp(self) -> None:
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        write_landing_tables(directory, {"walk": REPORTS})
+        write_one_run(directory, {"walk": REPORTS})
         connection = duckdb.connect()
         self.addCleanup(connection.close)
-        register_landing(connection, directory)
+        register_one_run(connection, directory)
         self.walk = build_tables(connection)["walk"]
 
     def test_every_report_is_one_row_with_its_contract_columns_unchanged(self) -> None:

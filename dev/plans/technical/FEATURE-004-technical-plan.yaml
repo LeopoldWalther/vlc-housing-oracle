@@ -267,7 +267,7 @@ technical_plan:
         `run_id`) and read through `register_landing_v3`; every assertion stays. Then the v1
         `register_landing` and any temporary v1 test writer are removed. `build_tables` keeps
         working on the `landing_<table>` views, so the SQL is untouched here.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 3
       depends_on: ["2.1"]
