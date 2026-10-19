@@ -13,8 +13,9 @@ SELECT
     getvariable('redaction_version') AS redaction_version,
     getvariable('transformation_version') AS transformation_version
 FROM chosen_detail AS detail
-JOIN landing_listing_text AS text
+JOIN newest_listing_text AS text
     ON text.source = detail.source
+    AND text.run_id = detail.run_id
     AND text.area = detail.area
     AND text.source_listing_id = detail.source_listing_id
     AND text.observed_at = detail.observed_at

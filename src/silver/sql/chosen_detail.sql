@@ -2,7 +2,7 @@
 -- and on several days; the order is total, so listing and listing_text pick the same record on
 -- every rebuild.
 SELECT *
-FROM landing_listing_detail
+FROM newest_listing_detail
 QUALIFY row_number() OVER (
     PARTITION BY source, source_listing_id
     ORDER BY
