@@ -61,7 +61,7 @@ technical_plan:
         `src/contracts.py` gains `landing_v3_columns() -> dict[str, list[tuple[str, str]]]` and
         `landing_v3_sha256() -> str`, read from `contracts/landing/v3/schema.json`, beside the
         existing v1 readers, which stay.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: []
