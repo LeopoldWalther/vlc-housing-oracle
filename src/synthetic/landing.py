@@ -1,7 +1,7 @@
-"""Write landing tables that conform to the contract, from hand-written or generated rows.
+"""Write synthetic landing v3, from hand-written or generated rows.
 
-Landing v3 (one partition and one commit per collection run) is what Silver reads. The v1
-writer remains only until the last FEATURE-001 test has moved to v3.
+One partition and one commit per collection run, as the acquisition repository writes it, so every
+test and example runs on data shaped like the real thing and holds nothing real.
 """
 
 import json
@@ -12,45 +12,9 @@ from pathlib import Path
 
 import duckdb
 
-from src.contracts import landing_v1_columns, landing_v3_columns, landing_v3_sha256
+from src.contracts import landing_v3_columns, landing_v3_sha256
 
 LandingRow = Mapping[str, object]
-
-
-def write_landing_tables(
-    directory: Path, rows_by_table: Mapping[str, Sequence[LandingRow]]
-) -> None:
-    """Write every contract table as ``<directory>/<table>.parquet``.
-
-    A table missing from ``rows_by_table`` is written empty, so the directory always holds a whole
-    landing. A column missing from a row is NULL. Every column is typed by the contract, never
-    inferred, so an all-null column keeps its type.
-    """
-    contract = landing_v1_columns()
-    unknown_tables = sorted(set(rows_by_table) - set(contract))
-    if unknown_tables:
-        raise ValueError(f"Not landing v1 tables: {', '.join(unknown_tables)}")
-
-    connection = duckdb.connect()
-    connection.execute("SET TimeZone = 'UTC'")
-    for table, columns in contract.items():
-        rows = rows_by_table.get(table, [])
-        names = [name for name, _ in columns]
-        unknown_columns = sorted({key for row in rows for key in row} - set(names))
-        if unknown_columns:
-            raise ValueError(f"Not columns of landing table {table}: {', '.join(unknown_columns)}")
-
-        column_list = ", ".join(f'"{name}" {column_type}' for name, column_type in columns)
-        connection.execute(f'CREATE TABLE "{table}" ({column_list})')
-        if rows:
-            placeholders = ", ".join("?" for _ in names)
-            connection.executemany(
-                f'INSERT INTO "{table}" VALUES ({placeholders})',
-                [[row.get(name) for name in names] for row in rows],
-            )
-        target = directory / f"{table}.parquet"
-        connection.execute(f"COPY \"{table}\" TO '{target}' (FORMAT parquet)")
-    connection.close()
 
 
 # Invented places: no municipality or district here exists in the real data's area list.
@@ -58,34 +22,6 @@ MUNICIPALITIES = ("alba", "brisa", "cerro", "duna")
 FIRST_DAY = date(2026, 10, 1)
 DAYS = 7
 FILLER_LISTINGS = 24
-
-
-def generate_landing(directory: Path, *, seed: int) -> None:
-    """Write a whole synthetic landing: named hard cases plus filler drawn from ``seed``.
-
-    The hard cases are the shapes Silver must handle: replays, legacy walks, a run across midnight,
-    padding cards, ties between detail records, and descriptions holding personal data. The same
-    seed always writes the same rows.
-    """
-    scenarios = (
-        _recorded_replay(),
-        _inferred_replay(),
-        _legacy_walk(),
-        _run_across_midnight(),
-        _lone_empty_card(),
-        _priced_and_padding_copies(),
-        _padding_copies_only(),
-        _detail_on_two_days(),
-        _tied_detail_records(),
-        _observation_only(),
-        _personal_data_in_description(),
-        _filler(random.Random(seed)),
-    )
-    rows: dict[str, list[LandingRow]] = {table: [] for table in landing_v1_columns()}
-    for scenario in scenarios:
-        for table, table_rows in scenario.items():
-            rows[table].extend(table_rows)
-    write_landing_tables(directory, rows)
 
 
 def _at(day: date, hour: int, minute: int = 0) -> datetime:
@@ -347,8 +283,6 @@ def _filler(rng: random.Random) -> dict[str, list[LandingRow]]:
             )
     return _merge(*parts)
 
-
-# --- Landing v3 ---------------------------------------------------------------------------------
 
 RunMetadata = Mapping[str, object]
 
