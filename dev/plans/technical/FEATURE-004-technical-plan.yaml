@@ -574,7 +574,7 @@ technical_plan:
         ingest log last. `ProcessResult` reports pending, processed, days per table, affected
         count and snapshot ids. FEATURE-001's whole `rebuild()` is replaced by the backfill mode;
         `tests/test_silver_rebuild.py` moves to it with its assertions kept.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["3.2"]

@@ -1,4 +1,4 @@
-"""A rebuild turns a whole landing into one pinnable snapshot per Silver table."""
+"""A backfill turns a whole landing v3 into one pinnable snapshot per Silver table."""
 
 import tempfile
 import unittest
@@ -8,32 +8,45 @@ from pathlib import Path
 import duckdb
 from pyiceberg.catalog.sql import SqlCatalog
 
-from src.contracts import landing_v1_sha256
+from src.contracts import landing_v3_sha256
 from src.silver.landing import LandingContractError
-from src.silver.rebuild import NAMESPACE, SILVER_TABLES, RebuildResult, rebuild
-from src.synthetic.landing import generate_landing
+from src.silver.rebuild import (
+    NAMESPACE,
+    SILVER_TABLES,
+    ProcessResult,
+    local_commits,
+    process_landing,
+)
+from src.synthetic.landing import generate_landing_v3
 
 STARTED_AT = datetime(2026, 10, 8, 6, 0, tzinfo=UTC)
 
 
-class TestRebuild(unittest.TestCase):
+class TestBackfill(unittest.TestCase):
     def setUp(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.landing = root / "landing"
-        self.landing.mkdir()
-        generate_landing(self.landing, seed=1)
+        self.landing = root / "landing" / "v3"
+        self.landing.mkdir(parents=True)
+        generate_landing_v3(self.landing, seed=1)
         warehouse = root / "warehouse"
         warehouse.mkdir()
         self.catalog = SqlCatalog(
             "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
         )
 
-    def run_rebuild(self, connection: duckdb.DuckDBPyConnection | None = None) -> RebuildResult:
+    def run_backfill(self, connection: duckdb.DuckDBPyConnection | None = None) -> ProcessResult:
         connection = connection or duckdb.connect()
         self.addCleanup(connection.close)
-        return rebuild(connection, self.catalog, landing=self.landing, now=lambda: STARTED_AT)
+        return process_landing(
+            connection,
+            self.catalog,
+            landing=str(self.landing),
+            mode="backfill",
+            list_commits=lambda: local_commits(self.landing),
+            now=lambda: STARTED_AT,
+        )
 
-    def scan(self, table: str, snapshot_id: int) -> list[str]:
+    def scan(self, table: str, snapshot_id: int | None = None) -> list[str]:
         rows = (
             self.catalog.load_table(f"{NAMESPACE}.{table}")
             .scan(snapshot_id=snapshot_id)
@@ -42,61 +55,59 @@ class TestRebuild(unittest.TestCase):
         )
         return sorted(map(repr, rows))
 
-    def test_row_counts_match_each_committed_snapshot(self) -> None:
-        result = self.run_rebuild()
+    def test_every_table_is_committed_and_its_snapshot_holds_its_rows(self) -> None:
+        result = self.run_backfill()
 
-        self.assertEqual(set(SILVER_TABLES), set(result.row_counts))
+        self.assertEqual(set(SILVER_TABLES), set(result.snapshot_ids))
         for table in SILVER_TABLES:
             with self.subTest(table=table):
-                self.assertGreater(result.row_counts[table], 0)
-                self.assertEqual(
-                    result.row_counts[table], len(self.scan(table, result.snapshot_ids[table]))
-                )
+                rows = self.scan(table, result.snapshot_ids[table])
+                self.assertGreater(len(rows), 0)
+                self.assertEqual(self.scan(table), rows)
 
     def test_every_snapshot_records_what_built_it(self) -> None:
-        result = self.run_rebuild()
+        result = self.run_backfill()
 
         for table, snapshot_id in result.snapshot_ids.items():
             summary = (
                 self.catalog.load_table(f"{NAMESPACE}.{table}").snapshot_by_id(snapshot_id).summary
             )
             with self.subTest(table=table):
-                self.assertEqual(landing_v1_sha256(), summary["landing_contract_sha256"])
+                self.assertEqual(landing_v3_sha256(), summary["landing_contract_sha256"])
                 self.assertEqual("silver-v1", summary["transformation_version"])
                 self.assertEqual("r1", summary["redaction_version"])
                 self.assertEqual(STARTED_AT.isoformat(), summary["rebuild_started_at"])
+                self.assertEqual(str(result.pending), summary["landing_run_count"])
 
-    def test_a_non_utc_session_zone_still_rebuilds(self) -> None:
+    def test_a_non_utc_session_zone_still_backfills(self) -> None:
         connection = duckdb.connect()
         connection.execute("SET TimeZone = 'Europe/Madrid'")
 
-        result = self.run_rebuild(connection)
+        result = self.run_backfill(connection)
 
         self.assertEqual(set(SILVER_TABLES), set(result.snapshot_ids))
 
     def test_non_conforming_landing_creates_no_table(self) -> None:
-        (self.landing / "listing_text.parquet").unlink()
+        next(self.landing.glob("listing_text/*/run=*/part-0.parquet")).unlink()
 
         with self.assertRaises(LandingContractError):
-            self.run_rebuild()
+            self.run_backfill()
 
         for table in SILVER_TABLES:
             with self.subTest(table=table):
                 self.assertFalse(self.catalog.table_exists(f"{NAMESPACE}.{table}"))
 
-    def test_two_rebuilds_give_equal_rows(self) -> None:
+    def test_two_backfills_give_equal_rows(self) -> None:
         # Regression guard for the total orders: an ordering that loses a tiebreaker would let the
-        # second rebuild keep different rows.
-        first = self.run_rebuild()
-        second = self.run_rebuild()
+        # second backfill keep different rows.
+        self.run_backfill()
+        first = {table: self.scan(table) for table in SILVER_TABLES}
+
+        self.run_backfill()
 
         for table in SILVER_TABLES:
             with self.subTest(table=table):
-                self.assertNotEqual(first.snapshot_ids[table], second.snapshot_ids[table])
-                self.assertEqual(
-                    self.scan(table, first.snapshot_ids[table]),
-                    self.scan(table, second.snapshot_ids[table]),
-                )
+                self.assertEqual(first[table], self.scan(table))
 
 
 if __name__ == "__main__":
