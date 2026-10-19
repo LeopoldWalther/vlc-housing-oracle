@@ -769,7 +769,7 @@ technical_plan:
         s3://${var.lake_bucket}/landing/v3 --catalog silver --mode incremental --metrics`); task
         role with the plan's least-privilege policy; execution role (logs only); log group (30
         days); egress-only security group in the default VPC. `variables.tf` gains silver_image.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["5.1"]
