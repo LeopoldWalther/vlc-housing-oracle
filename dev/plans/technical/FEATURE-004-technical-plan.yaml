@@ -678,7 +678,7 @@ technical_plan:
         STOPPED; return on exit code 0; raise on a non-zero exit code or a task that stopped
         without starting; raise when `context.get_remaining_time_in_millis()` falls below a
         margin while the task still runs, leaving the task running (the redelivery adopts it).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: []
