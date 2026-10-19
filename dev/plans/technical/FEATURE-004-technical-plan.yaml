@@ -220,7 +220,7 @@ technical_plan:
         `listing_detail`/`listing_text` paired within the run. `listing_text` may be given a run
         set different from the other tables. Failures raise `LandingContractError` with table,
         run id and counts. The v1 `register_landing` stays until 1.2b has moved its tests.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2", "1.3"]
