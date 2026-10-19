@@ -114,7 +114,7 @@ technical_plan:
         (`import-<date>`) with records and no reports, a `failed` run, a run with no rows for one
         table, and a listing whose chosen detail record lies in an earlier run than its latest
         observation. FEATURE-001's existing generator tests are kept and adapted to the v3 layout.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["1.1"]
