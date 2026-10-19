@@ -170,7 +170,7 @@ technical_plan:
         `pending(commits, ingested) -> list[LandingCommit]` (commits whose run id is not ingested,
         ordered by run_started_at then run_id); `days_of(commits) -> dict[table, set[date]]`;
         `runs_for(days, known) -> dict[table, set[run_id]]` over pending and ingested runs.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
