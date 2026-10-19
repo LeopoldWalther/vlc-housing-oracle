@@ -817,7 +817,7 @@ technical_plan:
         `catch_up_enabled`, default false. `alerts.tf`: SNS topic and email subscription
         (var.alert_email), the stopped-task rule, alarms on the dead-letter depth and on
         PendingRuns > 0 for six hours.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["4.2", "5.2"]

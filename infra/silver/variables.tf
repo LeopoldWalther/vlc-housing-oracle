@@ -23,3 +23,33 @@ variable "silver_image" {
     error_message = "silver_image must name the Silver image by commit SHA or digest, never latest."
   }
 }
+
+variable "alert_email" {
+  description = "Address that receives Silver failure mail. Set it in terraform.tfvars, which git ignores."
+  type        = string
+}
+
+variable "trigger_enabled" {
+  description = "Whether a landing commit queues a Silver run. Off until the first backfill is done."
+  type        = bool
+  default     = false
+}
+
+variable "catch_up_enabled" {
+  description = "Whether the daily catch-up queues a Silver run."
+  type        = bool
+  default     = false
+}
+
+variable "consumer_enabled" {
+  description = "Whether the queue consumer starts Silver tasks. Turn it off before a manual backfill, on after."
+  type        = bool
+  default     = true
+}
+
+variable "consumer_reserved_concurrency" {
+  description = "Reserved concurrency of the queue consumer; null where the account's concurrency limit is 10."
+  type        = number
+  default     = 1
+  nullable    = true
+}
