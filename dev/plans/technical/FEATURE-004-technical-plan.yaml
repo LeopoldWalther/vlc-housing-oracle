@@ -378,7 +378,7 @@ technical_plan:
         on `keys` and deleting `delete_keys` in one transaction. The FEATURE-001 column-name check
         applies to both. Snapshot properties carry `landing_run_count`, `landing_run_first`,
         `landing_run_last`, the versions and the contract digest (L2).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.1"]
