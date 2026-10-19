@@ -626,7 +626,7 @@ technical_plan:
         `PendingRuns` (after the run) to namespace `vlc-housing-silver`. Exit 0, 1 on
         LandingContractError or SilverSchemaError before any commit, 2 on usage errors.
         `tests/test_silver_cli.py` moves to v3 with its cases kept.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["3.3"]

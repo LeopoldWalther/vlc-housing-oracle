@@ -1,14 +1,16 @@
-"""Rebuild Silver from landing v1: DuckDB SQL computes the tables, Iceberg stores them.
+"""Maintain Silver from landing v3: DuckDB SQL computes the tables, Iceberg stores them.
 
-Run from the repository root::
+Each run processes the landing runs Silver has not ingested yet (ADR 0003). Run from the
+repository root, or as the Fargate task's entry point::
 
-    python -m src.silver.rebuild --landing <local landing/v1 directory> --catalog <name>
+    python -m src.silver.rebuild --landing <dir or s3://bucket/landing/v3> --catalog <name> \
+        [--mode incremental|backfill] [--metrics]
 """
 
 import argparse
 import json
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -19,12 +21,12 @@ import pyarrow.compute as pc
 from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.expressions import In
 
-from src.contracts import landing_v1_sha256, landing_v3_sha256
+from src.contracts import landing_v3_sha256
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.ingest import ingested_runs, record_ingested
-from src.silver.landing import LandingContractError, register_landing, register_landing_v3
-from src.silver.sink import SilverSchemaError, replace_days, upsert_rows, write_silver_tables
+from src.silver.landing import LandingContractError, register_landing_v3
+from src.silver.sink import SilverSchemaError, replace_days, upsert_rows
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -40,42 +42,6 @@ SHARED_VIEWS = ("chosen_detail",)
 
 # Listings are upserted on this key in listing and listing_text.
 LISTING_KEY = ["source", "source_listing_id"]
-
-
-@dataclass(frozen=True)
-class RebuildResult:
-    """What one rebuild committed: rows and the snapshot a training dataset can pin, per table."""
-
-    row_counts: dict[str, int]
-    snapshot_ids: dict[str, int]
-
-
-def rebuild(
-    connection: duckdb.DuckDBPyConnection,
-    catalog: Catalog,
-    *,
-    landing: Path,
-    now: Callable[[], datetime],
-) -> RebuildResult:
-    """Rebuild every Silver table from the landing directory and commit it to ``catalog``.
-
-    Every table is computed before the first commit, so a landing that fails the contract writes
-    nothing. The commits themselves are per table: a failure between them leaves tables at
-    different rebuilds, visible as differing ``rebuild_started_at`` and repaired by a rerun.
-    """
-    register_landing(connection, landing)
-    tables = build_tables(connection)
-    properties = {
-        "transformation_version": TRANSFORMATION_VERSION,
-        "redaction_version": REDACTION_VERSION,
-        "landing_contract_sha256": landing_v1_sha256(),
-        "rebuild_started_at": now().astimezone(UTC).isoformat(),
-    }
-    snapshot_ids = write_silver_tables(catalog, NAMESPACE, tables, properties)
-    return RebuildResult(
-        row_counts={name: table.num_rows for name, table in tables.items()},
-        snapshot_ids=snapshot_ids,
-    )
 
 
 # The tables replaced per day; listing and listing_text are recomputed per affected listing.
@@ -306,13 +272,35 @@ def _statement(name: str) -> str:
     return (SQL_DIR / f"{name}.sql").read_text(encoding="utf-8")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Rebuild Silver once; exit 0 on success, 1 when landing or a table schema is refused."""
+METRICS_NAMESPACE = "vlc-housing-silver"
+
+
+def s3_commits(s3_client, location: str, exclude: Collection[str]) -> list[LandingCommit]:
+    """List an ``s3://`` landing v3's commits and read only those whose run is not in ``exclude``.
+
+    Listing is one paginated call over a few thousand keys a year; reading every commit on every
+    run would cost one GET per run ever landed, so ingested runs are known by their key alone.
+    """
+    bucket, _, prefix = location.removeprefix("s3://").partition("/")
+    prefix = f"{prefix.strip('/')}/_commits/"
+    commits = []
+    for page in s3_client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Contents", []):
+            run_id = item["Key"].rsplit("/", 1)[1].removesuffix(".json")
+            if run_id in exclude:
+                continue
+            body = s3_client.get_object(Bucket=bucket, Key=item["Key"])["Body"].read()
+            commits.append(parse_commit(json.loads(body)))
+    return commits
+
+
+def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client=None) -> int:
+    """Run Silver once; exit 0 on success, 1 when landing or a table schema is refused, 2 on usage."""
     parser = argparse.ArgumentParser(
-        prog="python -m src.silver.rebuild", description="Rebuild Silver from landing v1."
+        prog="python -m src.silver.rebuild", description="Maintain Silver from landing v3."
     )
     parser.add_argument(
-        "--landing", type=Path, required=True, help="local directory holding landing/v1 tables"
+        "--landing", required=True, help="landing v3: a directory or s3://bucket/prefix"
     )
     parser.add_argument(
         "--catalog",
@@ -320,22 +308,78 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="PyIceberg catalog name, configured in ~/.pyiceberg.yaml or PYICEBERG_CATALOG__* "
         "environment variables",
     )
+    parser.add_argument("--mode", choices=("incremental", "backfill"), default="incremental")
+    parser.add_argument("--metrics", action="store_true", help="publish PendingRuns to CloudWatch")
     arguments = parser.parse_args(argv)
-    if not arguments.landing.is_dir():
+    on_s3 = arguments.landing.startswith("s3://")
+    if not on_s3 and not Path(arguments.landing).is_dir():
         parser.error(f"--landing {arguments.landing} is not a directory")
 
     catalog = load_catalog(arguments.catalog)
-    with duckdb.connect() as connection:
-        try:
-            result = rebuild(
-                connection, catalog, landing=arguments.landing, now=lambda: datetime.now(UTC)
-            )
-        except (LandingContractError, SilverSchemaError) as error:
-            print(f"Silver rebuild refused: {error}", file=sys.stderr)
-            return 1
-    for table in SILVER_TABLES:
-        print(f"{table}: {result.row_counts[table]} rows, snapshot {result.snapshot_ids[table]}")
+    exclude = set() if arguments.mode == "backfill" else set(ingested_runs(catalog, NAMESPACE))
+    if on_s3:
+        if s3_client is None:
+            import boto3
+
+            s3_client = boto3.client("s3")
+        todo = s3_commits(s3_client, arguments.landing, exclude)
+    else:
+        todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in exclude]
+
+    remaining = len(todo)
+    try:
+        if not todo:
+            print("nothing pending")
+        else:
+            with duckdb.connect() as connection:
+                if on_s3:
+                    _read_s3_through_duckdb(connection)
+                result = process_landing(
+                    connection,
+                    catalog,
+                    landing=arguments.landing.rstrip("/"),
+                    mode=arguments.mode,
+                    list_commits=lambda: todo,
+                    now=lambda: datetime.now(UTC),
+                )
+            remaining = 0
+            _report(result)
+    except (LandingContractError, SilverSchemaError) as error:
+        print(f"Silver run refused: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if arguments.metrics:
+            _publish_pending(cloudwatch_client, remaining)
     return 0
+
+
+def _read_s3_through_duckdb(connection: duckdb.DuckDBPyConnection) -> None:
+    # The image pre-installs both extensions, so LOAD needs no network; the secret resolves the
+    # task role through the AWS credential chain.
+    connection.execute("LOAD httpfs")
+    connection.execute("LOAD aws")
+    connection.execute("CREATE OR REPLACE SECRET silver_s3 (TYPE s3, PROVIDER credential_chain)")
+
+
+def _report(result: ProcessResult) -> None:
+    print(f"pending: {result.pending}")
+    print(f"processed: {', '.join(result.processed)}")
+    for name in DAY_TABLES:
+        print(f"{name}: {len(result.days[name])} days, snapshot {result.snapshot_ids.get(name)}")
+    print(f"affected listings: {result.affected}")
+    for name in ("listing", "listing_text"):
+        print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
+
+
+def _publish_pending(cloudwatch_client, remaining: int) -> None:
+    if cloudwatch_client is None:
+        import boto3
+
+        cloudwatch_client = boto3.client("cloudwatch")
+    cloudwatch_client.put_metric_data(
+        Namespace=METRICS_NAMESPACE,
+        MetricData=[{"MetricName": "PendingRuns", "Value": remaining, "Unit": "Count"}],
+    )
 
 
 if __name__ == "__main__":

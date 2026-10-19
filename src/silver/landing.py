@@ -1,4 +1,4 @@
-"""Register landing as DuckDB views, after checking every file against the contract.
+"""Register landing v3 as DuckDB views, after checking every named file against the contract.
 
 Landing v3 is read per collection run: the views cover exactly the named runs' files, each file
 is checked against the v3 columns and, for a run not ingested yet, against its commit's row
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import duckdb
 
-from src.contracts import landing_v1_columns, landing_v3_columns
+from src.contracts import landing_v3_columns
 
 # Columns Silver's keys and orderings depend on. A null here would change which row a rebuild
 # chooses (a null is_empty_card sorts after an empty card), so it stops the rebuild instead.
@@ -43,35 +43,6 @@ DETAIL_TEXT_KEY = UNIQUE_KEYS["listing_detail"]
 
 class LandingContractError(Exception):
     """Landing does not conform to the contract; no Silver table may be built from it."""
-
-
-def register_landing(connection: duckdb.DuckDBPyConnection, directory: Path) -> None:
-    """Create ``landing_<table>`` views over ``directory`` once every check passes.
-
-    Messages name tables, columns and counts, never row values: landing is private data.
-    """
-    for table, columns in landing_v1_columns().items():
-        path = directory / f"{table}.parquet"
-        if not path.is_file():
-            raise LandingContractError(f"landing table {table} is missing: no {path.name}")
-        _check_columns(connection, table, path, columns)
-        view = f"landing_{table}"
-        literal = str(path).replace("'", "''")
-        # Transitional, until the v1 path is removed: v1 reads as one pseudo-run, so the
-        # statements written for landing v3 run over it unchanged.
-        connection.execute(
-            f"CREATE OR REPLACE VIEW {view} AS "
-            f"SELECT source, 'v1' AS run_id, * EXCLUDE (source) FROM read_parquet('{literal}')"
-        )
-        _check_not_null(connection, table, view)
-        if table in UNIQUE_KEYS:
-            _check_unique(connection, table, view, UNIQUE_KEYS[table])
-    _check_paired(connection, "listing_detail", "listing_text")
-    _check_paired(connection, "listing_text", "listing_detail")
-    connection.execute(
-        "CREATE OR REPLACE TEMP VIEW landing_runs AS "
-        "SELECT 'v1' AS run_id, NULL::TIMESTAMPTZ AS run_started_at"
-    )
 
 
 def _check_columns(
@@ -132,19 +103,14 @@ def _check_paired(
     connection: duckdb.DuckDBPyConnection,
     table: str,
     partner: str,
-    runs: Collection[str] | None = None,
+    runs: Collection[str],
 ) -> None:
-    # With runs given (landing v3), the pairing holds within each run, so only runs read for both
-    # tables are compared; listing_text may deliberately be read over other runs.
-    if runs is not None and not runs:
+    # The pairing holds within each run, so only runs read for both tables are compared;
+    # listing_text may deliberately be read over other runs.
+    if not runs:
         return
-    key = DETAIL_TEXT_KEY if runs is None else ("run_id", *DETAIL_TEXT_KEY)
-    key_list = ", ".join(key)
-    within = (
-        ""
-        if runs is None
-        else " WHERE run_id IN (" + ", ".join(_literal(r) for r in sorted(runs)) + ")"
-    )
+    key_list = ", ".join(("run_id", *DETAIL_TEXT_KEY))
+    within = " WHERE run_id IN (" + ", ".join(_literal(r) for r in sorted(runs)) + ")"
     unpaired = connection.sql(
         f"SELECT count(*) FROM (SELECT {key_list} FROM landing_{table}{within} "
         f"EXCEPT SELECT {key_list} FROM landing_{partner}{within})"
