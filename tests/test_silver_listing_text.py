@@ -8,9 +8,36 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 
-from src.silver.landing import register_landing
+from src.silver.landing import register_landing_v3
 from src.silver.rebuild import build_tables
-from src.synthetic.landing import write_landing_tables
+from src.synthetic.landing import write_landing_v3
+
+# One synthetic collection run: the FEATURE-001 rules are checked on landing v3, as Silver reads it.
+RUN_ID = "20261001T060000Z"
+RUN_STARTED = datetime(2026, 10, 1, 6, 0, tzinfo=UTC)
+LANDING_TABLES = ("walk", "observation", "listing_detail", "listing_text")
+
+
+def write_one_run(directory: Path, rows_by_table: dict) -> None:
+    rows = {
+        table: [{"run_id": RUN_ID} | dict(row) for row in table_rows]
+        for table, table_rows in rows_by_table.items()
+    }
+    write_landing_v3(directory, rows, runs={RUN_ID: {"run_started_at": RUN_STARTED}})
+
+
+def register_one_run(connection: duckdb.DuckDBPyConnection, directory: Path) -> None:
+    register_landing_v3(
+        connection,
+        str(directory),
+        dict.fromkeys(LANDING_TABLES, {RUN_ID}),
+        {RUN_ID: RUN_STARTED},
+        {},
+    )
+
+
+def run_file(directory: Path, table: str) -> Path:
+    return directory / table / f"run_date={RUN_STARTED.date()}" / f"run={RUN_ID}" / "part-0.parquet"
 
 
 def key(listing_id: str, day: int) -> dict[str, object]:
@@ -36,7 +63,7 @@ def text(listing_id: str, day: int, title: str) -> dict[str, object]:
 class TestSilverListingText(unittest.TestCase):
     def setUp(self) -> None:
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        write_landing_tables(
+        write_one_run(
             directory,
             {
                 "listing_detail": [key("syn-1", 1), key("syn-1", 5), key("syn-2", 3)],
@@ -50,7 +77,7 @@ class TestSilverListingText(unittest.TestCase):
         )
         connection = duckdb.connect()
         self.addCleanup(connection.close)
-        register_landing(connection, directory)
+        register_one_run(connection, directory)
         tables = build_tables(connection)
         self.listing: pa.Table = tables["listing"]
         self.rows = {row["source_listing_id"]: row for row in tables["listing_text"].to_pylist()}
