@@ -728,7 +728,7 @@ technical_plan:
         request without pushing; on push to main, build linux/arm64 and push to GHCR as
         ghcr.io/<owner>/vlc-housing-oracle-silver:<sha> and :latest with GITHUB_TOKEN
         (packages: write); no AWS step.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.5
       depends_on: ["4.1"]
