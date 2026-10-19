@@ -6,21 +6,25 @@ Run from the repository root::
 """
 
 import argparse
+import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pyarrow.compute as pc
 from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.expressions import In
 
-from src.contracts import landing_v1_sha256
-from src.silver.affected import ListingKey
+from src.contracts import landing_v1_sha256, landing_v3_sha256
+from src.silver.affected import ListingKey, affected_listings
+from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
+from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing, register_landing_v3
-from src.silver.sink import SilverSchemaError, upsert_rows, write_silver_tables
+from src.silver.sink import SilverSchemaError, replace_days, upsert_rows, write_silver_tables
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -72,6 +76,128 @@ def rebuild(
         row_counts={name: table.num_rows for name, table in tables.items()},
         snapshot_ids=snapshot_ids,
     )
+
+
+# The tables replaced per day; listing and listing_text are recomputed per affected listing.
+DAY_TABLES = ("walk", "observation", "listing_detail")
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    """What one incremental or backfill run did."""
+
+    pending: int
+    processed: tuple[str, ...]
+    days: dict[str, tuple[date, ...]]
+    affected: int
+    snapshot_ids: dict[str, int | None]
+
+
+def local_commits(landing: Path) -> list[LandingCommit]:
+    """Every commit of a local landing v3 tree."""
+    return [
+        parse_commit(json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted((landing / "_commits").glob("*.json"))
+    ]
+
+
+def process_landing(
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    *,
+    landing: str,
+    mode: str,
+    list_commits: Callable[[], list[LandingCommit]],
+    now: Callable[[], datetime],
+) -> ProcessResult:
+    """Process the landing runs Silver has not ingested yet; ``backfill`` treats every run as new.
+
+    Pending runs are landing's commits minus the ingest log. The days they touch are rebuilt from
+    every run that touches them, the listings those days held before or hold now are recomputed
+    from Silver's history, and the ingest log is written last: a run that stops before it leaves
+    its runs pending, and repeating them gives the same rows.
+    """
+    if mode not in ("incremental", "backfill"):
+        raise ValueError(f"unknown mode {mode!r}")
+    commits = list_commits()
+    ingested = {} if mode == "backfill" else ingested_runs(catalog, NAMESPACE)
+    todo = pending(commits, set(ingested))
+    if not todo:
+        return ProcessResult(0, (), {}, 0, {})
+
+    known = {run_id: run.observed_dates for run_id, run in ingested.items()}
+    known |= {commit.run_id: commit.observed_dates for commit in todo}
+    run_started = {run_id: run.run_started_at for run_id, run in ingested.items()}
+    run_started |= {commit.run_id: commit.run_started_at for commit in todo}
+    days = days_of(todo)
+    register_landing_v3(
+        connection,
+        landing,
+        runs_for(days, known),
+        run_started,
+        {commit.run_id: commit.row_counts for commit in todo},
+    )
+    tables = build_tables(connection)
+    properties = _properties(todo, now)
+
+    previous: list[pa.Table] = []
+    new: list[pa.Table] = []
+    snapshot_ids: dict[str, int | None] = {}
+    for name in DAY_TABLES:
+        named = days[name]
+        rows = tables[name].filter(
+            pc.is_in(tables[name]["observed_date"], pa.array(sorted(named), pa.date32()))
+        )
+        if name in ("observation", "listing_detail"):
+            previous.append(_silver_rows_of_days(catalog, name, named))
+            new.append(rows)
+        snapshot_ids[name] = replace_days(catalog, NAMESPACE, name, rows, named, properties)
+
+    affected = set().union(*(affected_listings(p, n) for p, n in zip(previous, new, strict=True)))
+    snapshot_ids |= update_listings(
+        connection,
+        catalog,
+        landing=landing,
+        affected=affected,
+        run_started=run_started,
+        properties=properties,
+    )
+    record_ingested(catalog, NAMESPACE, todo, now(), TRANSFORMATION_VERSION)
+    return ProcessResult(
+        pending=len(todo),
+        processed=tuple(commit.run_id for commit in todo),
+        days={name: tuple(sorted(days[name])) for name in DAY_TABLES},
+        affected=len(affected),
+        snapshot_ids=snapshot_ids,
+    )
+
+
+def _properties(todo: Sequence[LandingCommit], now: Callable[[], datetime]) -> dict[str, str]:
+    # Bounded: the full list of runs lives in the ingest log, not in every snapshot summary.
+    run_ids = sorted(commit.run_id for commit in todo)
+    return {
+        "transformation_version": TRANSFORMATION_VERSION,
+        "redaction_version": REDACTION_VERSION,
+        "landing_contract_sha256": landing_v3_sha256(),
+        "landing_run_count": str(len(run_ids)),
+        "landing_run_first": run_ids[0],
+        "landing_run_last": run_ids[-1],
+        "rebuild_started_at": now().astimezone(UTC).isoformat(),
+    }
+
+
+def _silver_rows_of_days(catalog: Catalog, name: str, days: set[date]) -> pa.Table:
+    """Silver's current rows of the named days, read before they are replaced."""
+    identifier = f"{NAMESPACE}.{name}"
+    if not days or not catalog.table_exists(identifier):
+        return pa.table(
+            {"source": pa.array([], pa.string()), "source_listing_id": pa.array([], pa.string())}
+        )
+    scan = catalog.load_table(identifier).scan(
+        row_filter=In("observed_date", sorted(day.isoformat() for day in days)),
+        selected_fields=("source", "source_listing_id"),
+    )
+    return scan.to_arrow()
 
 
 def build_tables(connection: duckdb.DuckDBPyConnection) -> dict[str, pa.Table]:
