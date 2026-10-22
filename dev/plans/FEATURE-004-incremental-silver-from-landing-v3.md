@@ -1,6 +1,6 @@
 # FEATURE-004 — Incremental Silver from landing v3, run by AWS
 
-**Status:** 🔵 Planned · **Effort:** L (~28h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** L (~28h) · **Priority:** High
 **Branch root:** `feature/incremental-silver-v3` · **Created:** 2026-10-18 · **Updated:** 2026-10-19
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-004.md`).

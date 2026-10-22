@@ -1,0 +1,10 @@
+# Only src/, contracts/ and requirements.txt belong in the image. Everything else stays out,
+# above all anything that could hold a real value.
+*
+!requirements.txt
+!src/
+!contracts/
+**/__pycache__
+**/*.pyc
+**/*.tfvars
+**/*.tfstate*

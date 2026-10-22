@@ -10,8 +10,8 @@ technical_plan:
     created_by: "reviewer_agent"
     created_at: "2026-10-19"
     version: "1.0"
-    total_tasks: 18
-    estimated_hours: "33.5"
+    total_tasks: 19
+    estimated_hours: "35.5"
     risk_level: "medium"
     critical_path: ["1.1", "1.2", "2.1", "1.2b", "2.2", "3.2", "3.3", "4.1", "5.1", "5.2", "5.3", "6.1", "6.2"]
     feature_plan: "dev/plans/FEATURE-004-incremental-silver-from-landing-v3.md"
@@ -61,7 +61,7 @@ technical_plan:
         `src/contracts.py` gains `landing_v3_columns() -> dict[str, list[tuple[str, str]]]` and
         `landing_v3_sha256() -> str`, read from `contracts/landing/v3/schema.json`, beside the
         existing v1 readers, which stay.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: []
@@ -114,7 +114,7 @@ technical_plan:
         (`import-<date>`) with records and no reports, a `failed` run, a run with no rows for one
         table, and a listing whose chosen detail record lies in an earlier run than its latest
         observation. FEATURE-001's existing generator tests are kept and adapted to the v3 layout.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["1.1"]
@@ -170,7 +170,7 @@ technical_plan:
         `pending(commits, ingested) -> list[LandingCommit]` (commits whose run id is not ingested,
         ordered by run_started_at then run_id); `days_of(commits) -> dict[table, set[date]]`;
         `runs_for(days, known) -> dict[table, set[run_id]]` over pending and ingested runs.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
@@ -220,7 +220,7 @@ technical_plan:
         `listing_detail`/`listing_text` paired within the run. `listing_text` may be given a run
         set different from the other tables. Failures raise `LandingContractError` with table,
         run id and counts. The v1 `register_landing` stays until 1.2b has moved its tests.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2", "1.3"]
@@ -267,7 +267,7 @@ technical_plan:
         `run_id`) and read through `register_landing_v3`; every assertion stays. Then the v1
         `register_landing` and any temporary v1 test writer are removed. `build_tables` keeps
         working on the `landing_<table>` views, so the SQL is untouched here.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 3
       depends_on: ["2.1"]
@@ -316,7 +316,7 @@ technical_plan:
         a registered `landing_runs` view (run_id, run_started_at). The existing statements read
         these views; FEATURE-001's cross-area order is unchanged. `sql/listing_detail.sql` makes
         a Silver table with every landing column plus run_id and transformation_version.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.2b"]
@@ -378,7 +378,7 @@ technical_plan:
         on `keys` and deleting `delete_keys` in one transaction. The FEATURE-001 column-name check
         applies to both. Snapshot properties carry `landing_run_count`, `landing_run_first`,
         `landing_run_last`, the versions and the contract digest (L2).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["1.1"]
@@ -426,7 +426,7 @@ technical_plan:
         dates per table and run_started_at; empty when the table is absent).
         `record_ingested(catalog, commits, now)` upserts on run_id. `outcome` and `is_replay` are
         audit columns and no function reads them for a rule (L4).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1
       depends_on: ["1.3"]
@@ -470,7 +470,7 @@ technical_plan:
         A pure function `affected_listings(previous, new) -> set[tuple[source, listing_id]]` over
         two Arrow tables: Silver's rows of the replaced days read before the overwrite, and the
         new rows. In `src/silver/rebuild.py` or a small `src/silver/affected.py`.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.3"]
@@ -516,7 +516,7 @@ technical_plan:
         run_started_at), joined on (run_id, area, source_listing_id, observed_at), redacted r1.
         Both are written with `upsert_rows` on (source, source_listing_id); an affected listing
         with no rows left is deleted from both.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["2.2", "2.3", "2.4", "3.1"]
@@ -574,7 +574,7 @@ technical_plan:
         ingest log last. `ProcessResult` reports pending, processed, days per table, affected
         count and snapshot ids. FEATURE-001's whole `rebuild()` is replaced by the backfill mode;
         `tests/test_silver_rebuild.py` moves to it with its assertions kept.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 3
       depends_on: ["3.2"]
@@ -626,7 +626,7 @@ technical_plan:
         `PendingRuns` (after the run) to namespace `vlc-housing-silver`. Exit 0, 1 on
         LandingContractError or SilverSchemaError before any commit, 2 on usage errors.
         `tests/test_silver_cli.py` moves to v3 with its cases kept.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["3.3"]
@@ -678,7 +678,7 @@ technical_plan:
         STOPPED; return on exit code 0; raise on a non-zero exit code or a task that stopped
         without starting; raise when `context.get_remaining_time_in_millis()` falls below a
         margin while the task still runs, leaving the task running (the redelivery adopts it).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: []
@@ -718,6 +718,62 @@ technical_plan:
         - "tests/test_silver_consumer.py"
       files_to_modify: []
 
+    - id: "4.3"
+      title: "A backfill adds new columns to FEATURE-001's tables"
+      description: |
+        Added on 2026-10-19 with the user's decision, after implementation found that the Silver
+        tables FEATURE-001 left in AWS lack run_id, so the first backfill (6.1) would stop at the
+        strict column check. The sink's writers gain `allow_new_columns` (default False): when the
+        existing columns are an ordered subsequence of the new rows' columns, the missing ones are
+        added (`update_schema().union_by_name`) and moved into place (`move_first`/`move_after`);
+        a removed, reordered or retyped column still raises SilverSchemaError and changes nothing.
+        Only the backfill mode allows it, and it writes listing and listing_text by a whole-table
+        overwrite instead of an upsert, because PyIceberg 0.12's upsert fails on a table whose old
+        files predate the new columns (spike 2026-10-19). Earlier snapshots stay readable with
+        their own columns. The incremental mode stays strict.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2
+      depends_on: ["3.3", "4.1"]
+      branch: "feature/incremental-silver-v3/4.3-backfill-adds-columns"
+      commit_message: "feat(silver): a backfill adds new columns to existing Silver tables"
+      acceptance_criteria:
+        - "With allow_new_columns, a table missing run_id gets it after source; rows are written; an earlier snapshot still reads with its old columns"
+        - "With allow_new_columns, a removed column and a changed type still raise SilverSchemaError and leave the schema unchanged"
+        - "Without it, a new column raises SilverSchemaError as before"
+        - "A backfill over FEATURE-001-shaped tables (no run_id, no listing_detail, unpartitioned) succeeds and equals a backfill into an empty catalog"
+        - "An incremental run over FEATURE-001-shaped tables raises SilverSchemaError before any commit"
+      tdd:
+        red:
+          test_file: "tests/test_silver_sink.py"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+          expected_failure: "TypeError: replace_days() got an unexpected keyword argument 'allow_new_columns'"
+        green:
+          behavior: "Additive column evolution in the sink, enabled only by the backfill mode, with whole-table writes for listing and listing_text in backfill"
+          command: "python -m unittest discover -s tests -t . -p 'test_silver_sink.py' -v"
+        refactor:
+          rule: "One private function decides between equal, additive and refused schemas for every writer"
+          command: "python -m unittest discover -s tests -t . -v"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_sink.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the task commit; nothing is applied in this task"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_sink.py"
+        - "tests/test_silver_rebuild.py"
+
     - id: "5.1"
       title: "Dockerfile, .dockerignore and the image workflow"
       description: |
@@ -728,7 +784,7 @@ technical_plan:
         request without pushing; on push to main, build linux/arm64 and push to GHCR as
         ghcr.io/<owner>/vlc-housing-oracle-silver:<sha> and :latest with GITHUB_TOKEN
         (packages: write); no AWS step.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.5
       depends_on: ["4.1"]
@@ -769,7 +825,7 @@ technical_plan:
         s3://${var.lake_bucket}/landing/v3 --catalog silver --mode incremental --metrics`); task
         role with the plan's least-privilege policy; execution role (logs only); log group (30
         days); egress-only security group in the default VPC. `variables.tf` gains silver_image.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["5.1"]
@@ -817,7 +873,7 @@ technical_plan:
         `catch_up_enabled`, default false. `alerts.tf`: SNS topic and email subscription
         (var.alert_email), the stopped-task rule, alarms on the dead-letter depth and on
         PendingRuns > 0 for six hours.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2
       depends_on: ["4.2", "5.2"]
@@ -869,7 +925,7 @@ technical_plan:
       status: "not_started"
       complexity: "medium"
       estimated_hours: 1.5
-      depends_on: ["5.3"]
+      depends_on: ["5.3", "4.3"]
       branch: "feature/incremental-silver-v3/6.1-first-runs"
       commit_message: "docs(silver): first backfill and first queued run in AWS"
       acceptance_criteria:
