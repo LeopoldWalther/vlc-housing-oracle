@@ -6,6 +6,11 @@
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-001.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-001-technical-plan.yaml`.
 
+> **Retired path (2026-10-24):** FEATURE-004 replaced the whole rebuild from `landing/v1/` with
+> incremental Silver from landing v3; `rebuild()` and the v1 landing reader are removed, and the
+> first v3 backfill migrated the tables this feature created. The rules below still hold as
+> `silver-v1`. See `docs/silver-rebuild.md`.
+
 ## Objective
 
 Rebuild four Silver tables — `walk`, `observation`, `listing`, `listing_text` — as Apache Iceberg
