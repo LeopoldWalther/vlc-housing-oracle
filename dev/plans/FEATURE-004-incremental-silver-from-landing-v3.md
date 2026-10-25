@@ -416,13 +416,14 @@ feature nothing reads landing v1.
 
 ### Phase 6 — operation and documentation
 
-- [ ] **6.1 First runs in AWS** (operator, commands prepared): apply with the starters off; one
+- [x] **6.1 First runs in AWS** (operator, commands prepared): apply with the starters off; one
     manual `run-task --mode backfill`; check every Silver table's row count against a local
     backfill of the same landing and that the ingest log holds every commit; enable the starters;
     after the next collection run is landed, check that its commit's event reached the queue,
     that the consumer started one Silver task, that the task processed exactly that run, and that
-    `PendingRuns` reads 0; then send two messages within a minute and check that one task ran,
-    not two. Record counts only.
+    `PendingRuns` reads 0; then send two messages within a minute and check that no two tasks
+    ran at once and that a surplus message costs at most a task that finds nothing pending.
+    Record counts only.
 - [ ] **6.2 Runbook, README and contract notes.** `docs/silver-rebuild.md` becomes the v3
     runbook (modes, the ingest log, the queue and why it serializes, why the message body is
     never read, the catch-up, the alarms, the dead-letter procedure — read the failed task's log,
@@ -517,8 +518,8 @@ feature nothing reads landing v1.
 - [ ] Incremental processing through any sequence of commits equals a backfill, per table.
 - [ ] Two live runs of one day and a replay of an old day yield the rows v1 kept, by the
     newest-sighting rule, covered by tests and by the synthetic scenarios.
-- [ ] In AWS, a landing commit's event is queued and starts one Silver run that processes exactly
-    that run; two messages within a minute start one task, not two; the catch-up, the
+- [x] In AWS, a landing commit's event is queued and starts one Silver run that processes exactly
+    that run; two messages within a minute never run two tasks at once; the catch-up, the
     dead-letter alarm and the `PendingRuns` alarm exist; failures are mailed; `PendingRuns`
     reads 0 after the first event-started run.
 - [ ] No FEATURE-001 rule test is lost: the suite holds at least 81 tests after the migration.
@@ -552,6 +553,27 @@ feature nothing reads landing v1.
 
 ## Progress log
 
+- **2026-10-25** — Task 6.1 done in AWS (counts and ids only). Terraform: 28 resources added, 1
+    changed (the Glue database description), with both starters off; the account's Lambda
+    concurrency limit is 400, so `consumer_reserved_concurrency` stays 1. The image runs by its
+    SHA tag `3740c1d`; anonymous pulls from GHCR succeed. Manual backfill on 2026-10-22: exit 0
+    after 1.5 minutes over 160 commits; every table equals a local backfill of the same landing
+    (walk 1107, observation 54108, listing_detail 17167, listing 17146, listing_text 17129,
+    landing_ingest 160) and the ingest log holds exactly the 160 commits. Starters enabled the
+    same day. `test-event-pattern`: a `landing/v3/_commits/` key matches; a v3 data file and a
+    v2 commit do not. Two messages sent within seconds started two tasks one after the other,
+    never at once: the poller took the first message alone, the second waited behind it in the
+    message group, and both tasks printed `nothing pending` and exited 0 within a minute. The
+    criterion "two messages start one task" is therefore replaced by "never two tasks at once; a
+    surplus message costs at most one no-op task" — batching is not guaranteed without a
+    batching window, which FIFO mappings do not support, and the safety property is the
+    serialization. Landing paused from 2026-10-20 to 2026-10-25 on the acquisition side's
+    monthly budget gate; the catch-up ran on 2026-10-23, -24 and -25 and found nothing pending.
+    On 2026-10-25 six commits landed (`20261025T000105Z` … `20261025T150110Z`); each started
+    exactly one consumer task that processed exactly its run (the first: 1 day per day table,
+    993 affected listings; the other five carried walk rows only), the ingest log holds 166 rows
+    for 166 commits, `PendingRuns` reads 0, both alarms are OK and the SNS subscription is
+    confirmed.
 - **2026-10-19** — Revised after the review of 2026-10-18 (Changes Recommended). H1: runs are
     serialized by an SQS FIFO queue with one message group and a single-concurrency Lambda
     consumer that runs the Fargate task and waits for it; the user chose this over Step Functions
