@@ -67,9 +67,35 @@ resource "aws_cloudwatch_event_rule" "task_failed" {
   })
 }
 
+# The mail is plain text naming the task, its exit code and where its log is, instead of the raw
+# ECS event; a missing exit code means the container never ran.
 resource "aws_cloudwatch_event_target" "task_failed" {
   rule = aws_cloudwatch_event_rule.task_failed.name
   arn  = aws_sns_topic.alerts.arn
+
+  input_transformer {
+    input_paths = {
+      task       = "$.detail.taskArn"
+      started_by = "$.detail.startedBy"
+      stopped_at = "$.detail.stoppedAt"
+      exit_code  = "$.detail.containers[0].exitCode"
+      reason     = "$.detail.stoppedReason"
+    }
+    # A JSON string, built by hand: jsonencode would escape the <placeholders>.
+    input_template = "\"${join("\\n", [
+      "A Silver task failed.",
+      "",
+      "Task: <task>",
+      "Started by: <started_by>",
+      "Stopped at (UTC): <stopped_at>",
+      "Exit code: <exit_code>",
+      "Reason: <reason>",
+      "",
+      "Exit codes: 1 = landing or a table schema was refused (the log names the table and run); 137 = out of memory; 139 = the process crashed; none = the container never started.",
+      "Log: CloudWatch log group ${aws_cloudwatch_log_group.silver.name}, stream silver/silver/ plus the last part of the task ARN.",
+      "The queue retries the run up to three times; after that the dead-letter alarm follows. Runbook: docs/silver-rebuild.md.",
+    ])}\""
+  }
 }
 
 resource "aws_cloudwatch_metric_alarm" "dead_letter" {
