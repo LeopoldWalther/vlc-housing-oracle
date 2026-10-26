@@ -1,5 +1,7 @@
 """The Iceberg sink overwrites whole tables, one pinnable snapshot per write, and refuses drift."""
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import date
@@ -210,6 +212,42 @@ class TestUpsertRows(unittest.TestCase):
 
         with self.assertRaises(SilverSchemaError):
             self.upsert("SELECT 'syn' AS source, 'syn-1' AS source_listing_id, 1::INT AS price_eur")
+
+    def test_thousands_of_listings_are_upserted(self) -> None:
+        # Regression: PyIceberg's upsert matched a two-column key by one nested clause per row and
+        # crashed the process (exit 139 in AWS) beyond a few thousand rows. A child process turns
+        # a crash into a failed test instead of a dead test runner.
+        child = subprocess.run(
+            [sys.executable, "-c", WIDE_UPSERT, self.enterContext(tempfile.TemporaryDirectory())],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        self.assertEqual(0, child.returncode, child.stderr[-2000:])
+        self.assertEqual("10000 10000", child.stdout.strip())
+
+
+WIDE_UPSERT = """
+import sys
+import pyarrow as pa
+from pyiceberg.catalog.sql import SqlCatalog
+from src.silver.sink import upsert_rows
+
+warehouse = sys.argv[1]
+catalog = SqlCatalog("t", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}")
+n = 10_000
+rows = pa.table({
+    "source": ["syn"] * n,
+    "source_listing_id": [f"syn-{i}" for i in range(n)],
+    "price_eur": pa.array(range(n), pa.int32()),
+})
+keys = ["source", "source_listing_id"]
+upsert_rows(catalog, "ns", "listing", rows, keys, (), {})
+upsert_rows(catalog, "ns", "listing", rows.set_column(2, "price_eur", pa.array(range(1, n + 1), pa.int32())), keys, (), {})
+table = catalog.load_table("ns.listing").scan().to_arrow()
+print(table.num_rows, sum(1 for a, b in zip(table["source_listing_id"].to_pylist(), table["price_eur"].to_pylist()) if int(a[4:]) + 1 == b))
+"""
 
 
 OLD_SHAPE = "SELECT 'syn' AS source, 'syn-1' AS source_listing_id, DATE '2026-10-01' + i::INT AS observed_date, i::INT AS price_eur FROM range(3) t(i)"
