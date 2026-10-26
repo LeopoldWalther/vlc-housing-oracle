@@ -104,21 +104,23 @@ def upsert_rows(
     """Upsert ``rows`` on ``keys`` and delete ``delete_keys``, in one transaction.
 
     Returns the current snapshot id, or ``None`` when the table does not exist and there is
-    nothing to write. An upsert that changes nothing writes no snapshot.
+    nothing to write.
     """
     identifier = f"{namespace}.{name}"
     if rows.num_rows == 0 and not delete_keys:
         return _current_snapshot_id(catalog, identifier)
-    # Strict: PyIceberg 0.12's upsert fails on files that predate an added column, so new columns
-    # reach an upserted table only through a backfill's whole-table write.
+    # Strict: upserted tables gain new columns only through a backfill's whole-table write.
     table, _ = _table_for(catalog, namespace, identifier, rows, allow_new_columns=False)
+    # Every key written is first deleted, then appended. PyIceberg 0.12's own upsert matches a
+    # multi-column key by one nested clause per row and crashes the process beyond a few thousand
+    # rows; _key_filter stays one In() per source.
+    replaced = set(delete_keys) | set(zip(*(rows[key].to_pylist() for key in keys), strict=True))
 
     def write() -> None:
         with table.transaction() as transaction:
-            if delete_keys:
-                transaction.delete(_key_filter(keys, delete_keys), dict(properties))
+            transaction.delete(_key_filter(keys, replaced), dict(properties))
             if rows.num_rows:
-                transaction.upsert(rows, list(keys), snapshot_properties=dict(properties))
+                transaction.append(rows, dict(properties))
 
     _commit(identifier, write)
     return _current_snapshot_id(catalog, identifier)
