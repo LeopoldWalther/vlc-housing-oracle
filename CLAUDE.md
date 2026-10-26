@@ -38,6 +38,7 @@ Keep dependencies directed through these boundaries:
 
 1. **Landing** (input, owned elsewhere): Parquet tables under `landing/v<n>/` whose schema is
      `contracts/landing/v<n>/schema.json`. This repository reads landing and never writes it.
+     Silver follows landing v3; v1 is retired and kept only as a contract.
 2. **Silver** validates, deduplicates, and historizes listings as **Apache Iceberg** tables,
      maintained incrementally from landing by pure DuckDB transformations: landing announces
      every collection run with an immutable commit, Silver processes the commits its ingest log

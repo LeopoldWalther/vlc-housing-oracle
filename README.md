@@ -5,17 +5,18 @@ documented landing contract. From there, this repository builds historized Silve
 Iceberg, Gold features and aggregates as Parquet, and models on top: fair-price estimation,
 time-on-market, and market dynamics.
 
-> **Status:** Silver is implemented: `python -m src.silver.rebuild --landing <dir> --catalog <name>`
-> rebuilds four Iceberg tables from landing v1 ([runbook](docs/silver-rebuild.md)). Gold and models
-> are not built yet.
+> **Status:** Silver is implemented and follows landing v3: a landing commit queues a run in AWS,
+> and `python -m src.silver.rebuild --landing <dir-or-s3> --catalog <name>` processes the runs its
+> ingest log does not hold yet into five Iceberg tables ([runbook](docs/silver-rebuild.md)). Gold
+> and models are not built yet.
 
 ## Architecture
 
 ```
  private acquisition            this repository
  ───────────────────            ───────────────────────────────────────────────────────────
- collection → Bronze  ──►  landing/v1/ (Parquet)  ──►  Silver (Iceberg)  ──►  Gold (Parquet)  ──►  notebooks · models · web
-                           contract: contracts/landing/v1/schema.json
+ collection → Bronze  ──►  landing/v3/ (Parquet, one commit per run)  ──►  Silver (Iceberg)  ──►  Gold (Parquet)  ──►  notebooks · models · web
+                           contract: contracts/landing/v3/schema.json
 ```
 
 - **Landing** is the boundary. Its schema is a file, pinned by its SHA-256 in tests on both sides,

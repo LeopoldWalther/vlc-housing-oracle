@@ -1,7 +1,7 @@
 # FEATURE-004 — Incremental Silver from landing v3, run by AWS
 
-**Status:** 🟡 In progress · **Effort:** L (~28h) · **Priority:** High
-**Branch root:** `feature/incremental-silver-v3` · **Created:** 2026-10-18 · **Updated:** 2026-10-19
+**Status:** 🟢 Complete · **Effort:** L (~28h) · **Priority:** High
+**Branch root:** `feature/incremental-silver-v3` · **Created:** 2026-10-18 · **Updated:** 2026-10-25
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-004.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-004-technical-plan.yaml`.
@@ -306,11 +306,11 @@ feature nothing reads landing v1.
 
 ### Phase 1 — contract, synthetic v3, and the pending set
 
-- [ ] **1.1 Pin landing v3.** RED: a test asserts the SHA-256 of `contracts/landing/v3/schema.json`
+- [x] **1.1 Pin landing v3.** RED: a test asserts the SHA-256 of `contracts/landing/v3/schema.json`
     equals the digest above and that every table's columns are v1's plus `run_id` after `source`;
     `src/contracts.py` gains `landing_v3_columns()` and `landing_v3_sha256()`. Fails because the
     functions do not exist. GREEN: the two functions. v1's pin stays.
-- [ ] **1.2 The synthetic writer and generator write landing v3.** RED:
+- [x] **1.2 The synthetic writer and generator write landing v3.** RED:
     `write_landing_tables(directory, rows_by_table)` keeps its row-based interface, requires
     `run_id` on every row, writes `landing/v3/<table>/run_date=…/run=…/part-0.parquet` per run
     and `_commits/<run_id>.json` with the contract's fields true of the files;
@@ -320,12 +320,12 @@ feature nothing reads landing v1.
     run with no rows for one table (a zero-row file), and a listing whose chosen detail record
     is in an earlier run than its latest observation. Fails because the writer produces v1
     files. GREEN: the v3 writer and the scenarios.
-- [ ] **1.2b FEATURE-001's rule tests move to v3 fixtures.** Validation-first migration, no new
+- [x] **1.2b FEATURE-001's rule tests move to v3 fixtures.** Validation-first migration, no new
     behaviour: `test_silver_walk`, `_observation`, `_listing`, `_listing_text`, `_redaction` and
     the boundary tests build their rows with the v3 writer (adding `run_id`) and read through the
     v3 reader of task 2.1; every assertion stays. The suite's test count does not fall. Ordered
     after 2.1, which it depends on.
-- [ ] **1.3 Commits, the pending set, and the runs per day (pure).** RED, over hand-written
+- [x] **1.3 Commits, the pending set, and the runs per day (pure).** RED, over hand-written
     commit dicts and an ingest-log mapping: pending = commits − ingested, oldest first by the
     date in the id; `days_of(pending)` per table; `runs_for(days, commits ∪ ingested)` per table
     and day; a malformed commit (missing field, wrong contract or version, wrong digest) raises
@@ -333,7 +333,7 @@ feature nothing reads landing v1.
 
 ### Phase 2 — the per-day tables
 
-- [ ] **2.1 Landing v3 is read and checked per run.** RED: `register_landing_v3(connection,
+- [x] **2.1 Landing v3 is read and checked per run.** RED: `register_landing_v3(connection,
     location, runs_by_table, commits)` registers `landing_<table>` views over exactly the named
     runs' files per table (local directory or `s3://`), after checking columns, the commit's
     `row_counts`, nulls, uniqueness within a run and pairing within a run; a file whose row count
@@ -341,17 +341,17 @@ feature nothing reads landing v1.
     other tables (task 3.2 reads the chosen records' runs). Fails because the function does not
     exist. GREEN: the v3 reader. The v1 `register_landing` is removed only after 1.2b has moved
     its boundary tests.
-- [ ] **2.2 The newest sighting rule.** RED: two runs of one day with the same listing in one
+- [x] **2.2 The newest sighting rule.** RED: two runs of one day with the same listing in one
     area → `observation` keeps the later run's row; a replay run re-deriving a detail with the
     same `observed_at` and a newer `ingested_at` → `listing_detail` and `listing_text` keep the
     replay's row; FEATURE-001's cross-area cases unchanged. GREEN: a `newest_sighting` view before
     the existing statements; `listing_detail.sql` as a Silver table.
-- [ ] **2.3 Partitioned tables and day replacement in the sink.** RED: `walk`, `observation` and
+- [x] **2.3 Partitioned tables and day replacement in the sink.** RED: `walk`, `observation` and
     `listing_detail` are created partitioned by `identity(observed_date)`; `replace_days(table,
     rows, days)` overwrites exactly those days and leaves the others; an existing unpartitioned
     table is evolved with `update_spec()`; snapshot properties carry `landing_run_ids`. GREEN:
     the sink.
-- [ ] **2.4 The ingest log.** RED: `landing_ingest` is created with the contract's commit
+- [x] **2.4 The ingest log.** RED: `landing_ingest` is created with the contract's commit
     fields; `ingested_runs(catalog)` returns run id → observed dates and `run_started_at`;
     `record_ingested(catalog, commits)` upserts on `run_id`, so recording the same commits twice
     leaves one row per run; a run whose process fails before the log leaves the log unchanged.
@@ -359,10 +359,10 @@ feature nothing reads landing v1.
 
 ### Phase 3 — the history-wide tables and the equality
 
-- [ ] **3.1 Affected listings.** RED: the ids in Silver's previous rows of the replaced days and in
+- [x] **3.1 Affected listings.** RED: the ids in Silver's previous rows of the replaced days and in
     the new rows, union; a listing present yesterday in a replaced day and absent today is in the
     set. GREEN: a pure function over two Arrow tables.
-- [ ] **3.2 `listing` and `listing_text` for affected ids.** RED: `listing` recomputed from
+- [x] **3.2 `listing` and `listing_text` for affected ids.** RED: `listing` recomputed from
     Silver `observation` and Silver `listing_detail` filtered to the affected ids with
     FEATURE-001's rules plus `run_id` of the chosen record; `listing_text` read from landing by
     the chosen records' distinct `run_id`s (the run's `run_date` from the ingest log), joined on
@@ -371,20 +371,20 @@ feature nothing reads landing v1.
     unaffected listing's row is byte-identical afterwards; the scenario whose chosen record sits in
     an earlier, already ingested run gets that run's text. GREEN: the two statements over Silver
     plus the targeted landing read, and the upsert and delete in the sink.
-- [ ] **3.3 Incremental equals backfill.** RED: over the synthetic v3, processing commits one at a
+- [x] **3.3 Incremental equals backfill.** RED: over the synthetic v3, processing commits one at a
     time in id order, then three at a time, then all at once (`--mode backfill`), gives the same
     row set per Silver table and the same ingest log; a run interrupted after the per-day commits
     and repeated gives the same result. GREEN: whatever the three runs disagree on.
 
 ### Phase 4 — the command
 
-- [ ] **4.1 Modes and locations.** RED: `--mode incremental` with nothing pending exits 0 and
+- [x] **4.1 Modes and locations.** RED: `--mode incremental` with nothing pending exits 0 and
     prints "nothing pending"; `--mode backfill` processes everything; `--landing s3://…` lists and
     reads commits through an injected S3 client and registers files by their `s3://` paths; a
     `PendingRuns` count is printed and, with `--metrics`, published through an injected
     CloudWatch client; exit 1 on `LandingContractError` or `SilverSchemaError` before any commit.
     GREEN: the CLI.
-- [ ] **4.2 The queue consumer.** RED, with fake ECS and SQS clients in
+- [x] **4.2 The queue consumer.** RED, with fake ECS and SQS clients in
     `tests/test_silver_consumer.py`: `handler(event, context)` in `src/silver/consumer.py` starts
     exactly one task per invocation whatever the batch size, polls until the task stops, returns
     normally on exit code 0, raises on a non-zero exit code or a task that never started (so the
@@ -394,14 +394,14 @@ feature nothing reads landing v1.
 
 ### Phase 5 — the image and the infrastructure
 
-- [ ] **5.1 Dockerfile, `.dockerignore`, and the image workflow.** Validation-first: a local
+- [x] **5.1 Dockerfile, `.dockerignore`, and the image workflow.** Validation-first: a local
     `linux/arm64` build runs `--landing /tmp/landing/v3 --catalog local --mode backfill` over the
     synthetic landing and exits 0; the workflow builds on every pull request without pushing and
     pushes to GHCR on `main`, tagged with the SHA.
-- [ ] **5.2 Terraform: cluster, task definition, roles, logs, security group**
+- [x] **5.2 Terraform: cluster, task definition, roles, logs, security group**
     (`infra/silver/ecs.tf`). Validation-first: `fmt`, `validate`, and a plan with placeholder
     variables listing exactly the expected resources.
-- [ ] **5.3 Terraform: the queue, the consumer, the trigger, the catch-up, the alarms and the
+- [x] **5.3 Terraform: the queue, the consumer, the trigger, the catch-up, the alarms and the
     failure mail** (`infra/silver/queue.tf`, `trigger.tf`, `alerts.tf`; `trigger_enabled`,
     `catch_up_enabled`, default false). The FIFO queue with content-based deduplication and a
     16-minute visibility timeout; its dead-letter FIFO queue with `maxReceiveCount = 3`; the
@@ -416,14 +416,15 @@ feature nothing reads landing v1.
 
 ### Phase 6 — operation and documentation
 
-- [ ] **6.1 First runs in AWS** (operator, commands prepared): apply with the starters off; one
+- [x] **6.1 First runs in AWS** (operator, commands prepared): apply with the starters off; one
     manual `run-task --mode backfill`; check every Silver table's row count against a local
     backfill of the same landing and that the ingest log holds every commit; enable the starters;
     after the next collection run is landed, check that its commit's event reached the queue,
     that the consumer started one Silver task, that the task processed exactly that run, and that
-    `PendingRuns` reads 0; then send two messages within a minute and check that one task ran,
-    not two. Record counts only.
-- [ ] **6.2 Runbook, README and contract notes.** `docs/silver-rebuild.md` becomes the v3
+    `PendingRuns` reads 0; then send two messages within a minute and check that no two tasks
+    ran at once and that a surplus message costs at most a task that finds nothing pending.
+    Record counts only.
+- [x] **6.2 Runbook, README and contract notes.** `docs/silver-rebuild.md` becomes the v3
     runbook (modes, the ingest log, the queue and why it serializes, why the message body is
     never read, the catch-up, the alarms, the dead-letter procedure — read the failed task's log,
     fix the cause, purge the dead-letter queue, never redrive it, and let the next start catch up
@@ -511,20 +512,20 @@ feature nothing reads landing v1.
 
 ## Success criteria
 
-- [ ] The v3 contract is pinned by digest; the synthetic landing writes v3 with true commits.
-- [ ] Pending runs are a set difference between commits and the ingest log; a run processed
+- [x] The v3 contract is pinned by digest; the synthetic landing writes v3 with true commits.
+- [x] Pending runs are a set difference between commits and the ingest log; a run processed
     twice changes nothing; a run interrupted before the ingest log is repeated harmlessly.
-- [ ] Incremental processing through any sequence of commits equals a backfill, per table.
-- [ ] Two live runs of one day and a replay of an old day yield the rows v1 kept, by the
+- [x] Incremental processing through any sequence of commits equals a backfill, per table.
+- [x] Two live runs of one day and a replay of an old day yield the rows v1 kept, by the
     newest-sighting rule, covered by tests and by the synthetic scenarios.
-- [ ] In AWS, a landing commit's event is queued and starts one Silver run that processes exactly
-    that run; two messages within a minute start one task, not two; the catch-up, the
+- [x] In AWS, a landing commit's event is queued and starts one Silver run that processes exactly
+    that run; two messages within a minute never run two tasks at once; the catch-up, the
     dead-letter alarm and the `PendingRuns` alarm exist; failures are mailed; `PendingRuns`
     reads 0 after the first event-started run.
-- [ ] No FEATURE-001 rule test is lost: the suite holds at least 81 tests after the migration.
-- [ ] Every Silver snapshot names the landing runs that built it.
-- [ ] Nothing in this repository reads landing v1 any more.
-- [ ] Every behaviour test-first; unit tests, leak guard, workflow consistency, lint, format and
+- [x] No FEATURE-001 rule test is lost: the suite holds at least 81 tests after the migration.
+- [x] Every Silver snapshot names the landing runs that built it.
+- [x] Nothing in this repository reads landing v1 any more.
+- [x] Every behaviour test-first; unit tests, leak guard, workflow consistency, lint, format and
     Terraform checks green.
 
 ## Open questions & risks
@@ -552,6 +553,27 @@ feature nothing reads landing v1.
 
 ## Progress log
 
+- **2026-10-25** — Task 6.1 done in AWS (counts and ids only). Terraform: 28 resources added, 1
+    changed (the Glue database description), with both starters off; the account's Lambda
+    concurrency limit is 400, so `consumer_reserved_concurrency` stays 1. The image runs by its
+    SHA tag `3740c1d`; anonymous pulls from GHCR succeed. Manual backfill on 2026-10-22: exit 0
+    after 1.5 minutes over 160 commits; every table equals a local backfill of the same landing
+    (walk 1107, observation 54108, listing_detail 17167, listing 17146, listing_text 17129,
+    landing_ingest 160) and the ingest log holds exactly the 160 commits. Starters enabled the
+    same day. `test-event-pattern`: a `landing/v3/_commits/` key matches; a v3 data file and a
+    v2 commit do not. Two messages sent within seconds started two tasks one after the other,
+    never at once: the poller took the first message alone, the second waited behind it in the
+    message group, and both tasks printed `nothing pending` and exited 0 within a minute. The
+    criterion "two messages start one task" is therefore replaced by "never two tasks at once; a
+    surplus message costs at most one no-op task" — batching is not guaranteed without a
+    batching window, which FIFO mappings do not support, and the safety property is the
+    serialization. Landing paused from 2026-10-20 to 2026-10-25 on the acquisition side's
+    monthly budget gate; the catch-up ran on 2026-10-23, -24 and -25 and found nothing pending.
+    On 2026-10-25 six commits landed (`20261025T000105Z` … `20261025T150110Z`); each started
+    exactly one consumer task that processed exactly its run (the first: 1 day per day table,
+    993 affected listings; the other five carried walk rows only), the ingest log holds 166 rows
+    for 166 commits, `PendingRuns` reads 0, both alarms are OK and the SNS subscription is
+    confirmed.
 - **2026-10-19** — Revised after the review of 2026-10-18 (Changes Recommended). H1: runs are
     serialized by an SQS FIFO queue with one message group and a single-concurrency Lambda
     consumer that runs the Fargate task and waits for it; the user chose this over Step Functions

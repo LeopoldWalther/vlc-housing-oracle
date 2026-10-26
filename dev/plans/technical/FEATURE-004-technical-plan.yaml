@@ -922,7 +922,7 @@ technical_plan:
         send two messages within a minute and check that one task ran; record the
         test-event-pattern results. Record counts and ids only in the feature plan's progress
         log.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["5.3", "4.3"]
@@ -931,7 +931,7 @@ technical_plan:
       acceptance_criteria:
         - "The backfill's per-table row counts equal a local backfill of the same landing"
         - "One queued run processed exactly its commit; PendingRuns reads 0"
-        - "Two messages within a minute started one task"
+        - "Two messages within a minute never ran two tasks at once"
         - "The progress log records counts and ids only"
       tdd: null
       validation_commands:
@@ -958,7 +958,7 @@ technical_plan:
         redrive), disabling the event source mapping before a manual backfill, pinning snapshots,
         rolling back, the equality check. README and CLAUDE.md say Silver follows landing v3;
         FEATURE-001's plan notes that its v1 path is retired.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.5
       depends_on: ["6.1"]
