@@ -251,7 +251,7 @@ technical_plan:
         - listings absent from a sweep that walked their area;
         - for listings after the ramp-up: new listings per day, price-change frequency in
           listing_detail, listings that vanish and return, and lifetimes with the censored end.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
