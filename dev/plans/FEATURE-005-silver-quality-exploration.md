@@ -1,6 +1,6 @@
 # FEATURE-005 — Silver data-quality exploration
 
-**Status:** 🔵 Planned · **Effort:** M (~10h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~10h) · **Priority:** High
 **Branch root:** `feature/silver-quality-exploration` · **Created:** 2026-10-30 · **Updated:** 2026-10-31
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-005.md`).

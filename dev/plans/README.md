@@ -11,7 +11,7 @@ speculative roadmap: add a row only when its top-level plan exists.
 | FEATURE-001 | [Silver on Iceberg against landing/v1](FEATURE-001-silver-rebuild.md) | 🟢 Complete | `feature/silver-rebuild` | L (~16-20h) | High | architect |
 | FEATURE-003 | [Incremental Silver from landing v2, run by AWS](FEATURE-003-incremental-silver.md) — superseded by ADR 0003 before implementation | ⚪ Superseded | `feature/incremental-silver` | L (~20-24h) | High | architect |
 | FEATURE-004 | [Incremental Silver from landing v3, run by AWS](FEATURE-004-incremental-silver-from-landing-v3.md) | 🟢 Complete | `feature/incremental-silver-v3` | L (~28h) | High | architect |
-| FEATURE-005 | [Silver data-quality exploration](FEATURE-005-silver-quality-exploration.md) | 🔵 Planned | `feature/silver-quality-exploration` | M (~10h) | High | architect |
+| FEATURE-005 | [Silver data-quality exploration](FEATURE-005-silver-quality-exploration.md) | 🟡 In progress | `feature/silver-quality-exploration` | M (~10h) | High | architect |
 
 **Status legend:** 🔵 Planned · 🟡 In progress · 🟢 Complete · 🔴 Blocked · ⚪ Superseded
 
