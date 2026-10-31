@@ -70,7 +70,7 @@ technical_plan:
         - the aggregate-only rule and the private drill-down rule;
         - how to take the snapshot set and fill each file's constant block;
         - the tier and window definitions from the conventions above.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: []
