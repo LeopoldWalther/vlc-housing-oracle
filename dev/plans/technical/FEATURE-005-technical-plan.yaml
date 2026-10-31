@@ -177,7 +177,7 @@ technical_plan:
         - each listing's distance from its municipality's median coordinate, as percentiles and
           counts beyond thresholds;
         - consistency of district against page_district, and of neighborhood within a district.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1
       depends_on: ["1.1"]
