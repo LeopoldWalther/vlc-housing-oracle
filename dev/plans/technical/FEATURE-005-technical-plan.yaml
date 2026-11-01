@@ -287,7 +287,7 @@ technical_plan:
         - e-mail and web-address patterns;
         - honorific-plus-name forms that r1 misses.
         A confirmed contact detail is reported to the user at once, without its value.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 0.75
       depends_on: ["1.1"]
