@@ -214,7 +214,7 @@ technical_plan:
         - the share of pairs with identical redacted descriptions;
         - the surplus: exact for A, bounds for the other tiers.
         A separate, uncommitted query draws the task-3.1 sample.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 2
       depends_on: ["1.1"]
