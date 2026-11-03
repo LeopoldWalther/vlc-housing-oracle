@@ -50,9 +50,11 @@ REDACTED = {
     "34600000000": "[phone]",
     "Tel34600000000": "Tel[phone]",
     "Sra. García": "[name]",
+    "Sr. PÉREZ": "[name]",
+    "Dña GARCÍA llama": "[name] llama",
     "Llame al 600 000 000 o al 699 999 999, Sra. García": "Llame al [phone] o al [phone], [name]",
 }
-UNCHANGED = ["690.000 €", "Ref 123456789", "Ref 3412345678", "reformado 2023"]
+UNCHANGED = ["690.000 €", "Ref 123456789", "Ref 3412345678", "reformado 2023", "Sra. de", "Sr. y"]
 
 
 def silver_listing_text(descriptions: list[str], title: str = "Piso") -> list[dict[str, object]]:

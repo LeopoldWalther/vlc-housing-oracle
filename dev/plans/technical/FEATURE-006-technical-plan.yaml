@@ -114,7 +114,7 @@ technical_plan:
       description: |
         Let the name word of redact_personal accept either a capitalised word or a word of two or
         more capitals. Extend the header comment.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["1.1"]
