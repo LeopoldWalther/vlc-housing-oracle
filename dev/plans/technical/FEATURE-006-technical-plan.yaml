@@ -167,7 +167,7 @@ technical_plan:
         with or without +34, 0034 or a glued 34 -> [phone]; an honorific plus a capitalised or
         all-capitals word -> [name]; a pattern change is r3, never an edit of r2. The snapshot
         example table (line ~237) shows r2.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.25
       depends_on: ["1.2"]
