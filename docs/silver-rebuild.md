@@ -102,7 +102,7 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `observation` | `observed_date` | listing and day | Padding duplicates collapse by a total order: a real card before an empty card, the higher `price_eur`, then area columns, then `observed_at` and `ingested_at`. Empty cards are kept and flagged. |
 | `listing_detail` | `observed_date` | detail record | The history a listing recompute reads, so a night never rereads all of landing. No free text. |
 | `listing` | — | listing | Attributes of the newest detail record (`detail_observed_at`) plus `first_seen`, `last_seen`, `days_observed` over all observations. A listing seen only in search results has null attributes. |
-| `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r1'` (Spanish phone numbers → `[phone]`, honorific plus capitalised word → `[name]`). A pattern change is `r2`, never an edit of `r1`. |
+| `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r2'` (Spanish phone numbers, with or without `+34`, `0034` or a `34` glued to the number → `[phone]`; honorific plus a capitalised or all-capitals word → `[name]`). r2 added the glued `34` and the capitals to r1. A pattern change is `r3`, never an edit of `r2`. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
 
 ## Running in AWS
@@ -234,7 +234,7 @@ Each commit's snapshot summary records what built it:
 | Property | Example |
 | --- | --- |
 | `transformation_version` | `silver-v1` |
-| `redaction_version` | `r1` |
+| `redaction_version` | `r2` |
 | `landing_contract_sha256` | the digest of `contracts/landing/v3/schema.json` |
 | `landing_run_count` | `2` |
 | `landing_run_first`, `landing_run_last` | the smallest and largest run id processed |
