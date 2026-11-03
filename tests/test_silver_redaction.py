@@ -47,10 +47,12 @@ REDACTED = {
     "+34600000000.": "[phone].",
     "0034 600-000-000": "[phone]",
     "+34 700 000 000h": "[phone]h",
+    "34600000000": "[phone]",
+    "Tel34600000000": "Tel[phone]",
     "Sra. García": "[name]",
     "Llame al 600 000 000 o al 699 999 999, Sra. García": "Llame al [phone] o al [phone], [name]",
 }
-UNCHANGED = ["690.000 €", "Ref 123456789", "reformado 2023"]
+UNCHANGED = ["690.000 €", "Ref 123456789", "Ref 3412345678", "reformado 2023"]
 
 
 def silver_listing_text(descriptions: list[str], title: str = "Piso") -> list[dict[str, object]]:
@@ -96,7 +98,7 @@ class TestRedaction(unittest.TestCase):
     def test_every_row_records_the_redaction_version(self) -> None:
         rows = silver_listing_text(["600 000 000", "Piso"])
 
-        self.assertEqual(["r1", "r1"], [row["redaction_version"] for row in rows])
+        self.assertEqual(["r2", "r2"], [row["redaction_version"] for row in rows])
 
 
 if __name__ == "__main__":

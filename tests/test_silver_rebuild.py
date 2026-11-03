@@ -76,7 +76,7 @@ class TestBackfill(unittest.TestCase):
             with self.subTest(table=table):
                 self.assertEqual(landing_v3_sha256(), summary["landing_contract_sha256"])
                 self.assertEqual("silver-v1", summary["transformation_version"])
-                self.assertEqual("r1", summary["redaction_version"])
+                self.assertEqual("r2", summary["redaction_version"])
                 self.assertEqual(STARTED_AT.isoformat(), summary["rebuild_started_at"])
                 self.assertEqual(str(result.pending), summary["landing_run_count"])
 
