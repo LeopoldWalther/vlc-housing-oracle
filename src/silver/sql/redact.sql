@@ -1,7 +1,8 @@
--- Redaction r2: Spanish phone numbers (with or without +34 / 0034, or a 34 glued to the number,
--- which r1 missed) and an honorific followed by a name. The glued 34 has no word boundary, so it
--- also takes a number written straight after a word. 'g' replaces every match; without it DuckDB
--- replaces only the first. A pattern change is a new redaction version, recorded per row.
+-- Redaction r2: Spanish phone numbers (with or without +34 / 0034, or a 34 glued to the number)
+-- and an honorific followed by a name, capitalised or in capitals; r1 missed the glued 34 and the
+-- capitals. The glued 34 has no word boundary, so it also takes a number written straight after a
+-- word. 'g' replaces every match; without it DuckDB replaces only the first. A pattern change is a
+-- new redaction version, recorded per row.
 CREATE OR REPLACE TEMP MACRO redact_personal(text) AS
     regexp_replace(
         regexp_replace(
@@ -10,7 +11,7 @@ CREATE OR REPLACE TEMP MACRO redact_personal(text) AS
             '[phone]',
             'g'
         ),
-        '\b(Sr|Sra|Srta|Don|Doña|Dña)\.?\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+',
+        '\b(Sr|Sra|Srta|Don|Doña|Dña)\.?\s+[A-ZÁÉÍÓÚÑ]([a-záéíóúñ]+|[A-ZÁÉÍÓÚÑ]+)',
         '[name]',
         'g'
     )
