@@ -51,7 +51,7 @@ technical_plan:
         Extend the phone alternative of redact_personal with a boundary-free `34` prefix, ordered
         after `0034` and before `\b`, and set REDACTION_VERSION to "r2". Update the macro's header
         comment to name r2 and what it adds over r1.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: []

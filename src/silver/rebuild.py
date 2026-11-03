@@ -32,7 +32,7 @@ SQL_DIR = Path(__file__).resolve().parent / "sql"
 
 NAMESPACE = "vlc_housing_silver"
 TRANSFORMATION_VERSION = "silver-v1"
-REDACTION_VERSION = "r1"
+REDACTION_VERSION = "r2"
 
 # In dependency order: a statement may read the silver_<table> of any table listed before it.
 SILVER_TABLES = ("walk", "observation", "listing_detail", "listing", "listing_text")

@@ -1,6 +1,6 @@
 # FEATURE-006 — Redaction r2
 
-**Status:** 🔵 Planned · **Effort:** S (~3h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** S (~3h) · **Priority:** High
 **Branch root:** `feature/redaction-r2` · **Created:** 2026-11-01 · **Updated:** 2026-11-03
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-006.md`).

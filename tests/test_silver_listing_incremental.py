@@ -178,7 +178,7 @@ class TestUpdateListings(unittest.TestCase):
         texts = by_id(self.silver("listing_text"))
         self.assertEqual("Piso del primer run.", texts["syn-early-detail"]["description"])
         self.assertEqual("Llame al [phone].", texts["syn-new"]["description"])
-        self.assertEqual("r1", texts["syn-new"]["redaction_version"])
+        self.assertEqual("r2", texts["syn-new"]["redaction_version"])
 
     def test_only_the_chosen_runs_text_files_are_read(self) -> None:
         next(self.root.glob(f"listing_text/*/run={R0}/part-0.parquet")).unlink()
