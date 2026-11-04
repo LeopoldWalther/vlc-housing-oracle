@@ -1,0 +1,309 @@
+# Technical plan for FEATURE-006 — Redaction r2.
+# Emitted by the reviewer with the approval of 2026-11-03. It carries corrections M1, M2 and L1,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-006"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-03"
+    version: "1.0"
+    total_tasks: 5
+    estimated_hours: "3.5"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3", "2.1", "2.2"]
+    feature_plan: "dev/plans/FEATURE-006-redaction-r2.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-006.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - r2 is the macro `redact_personal` in src/silver/sql/redact.sql with exactly these patterns:
+        phone: (\+34[ .-]?|0034[ .-]?|34|\b)[6789]([ .-]?[0-9]){8}         -> [phone]
+        name:  \b(Sr|Sra|Srta|Don|Doña|Dña)\.?\s+[A-ZÁÉÍÓÚÑ]([a-záéíóúñ]+|[A-ZÁÉÍÓÚÑ]+)  -> [name]
+      Both with the 'g' flag, phone first, as in r1. No other pattern is added (review L2:
+      señor/señora stays out).
+    - Fixtures are synthetic; numbers use repeated digits; names are common surnames already used
+      by the suite's style (García, Pérez).
+    - Real data is touched only in Phase 2, by the operator, with counts only in any output.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "Glued country code and redaction version r2"
+      description: |
+        Extend the phone alternative of redact_personal with a boundary-free `34` prefix, ordered
+        after `0034` and before `\b`, and set REDACTION_VERSION to "r2". Update the macro's header
+        comment to name r2 and what it adds over r1.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: []
+      branch: "feature/redaction-r2/1.1-glued-country-code"
+      commit_message: "fix(silver): redaction r2 takes phone numbers glued to 34"
+      acceptance_criteria:
+        - "\"34600000000\" becomes \"[phone]\" and \"Tel34600000000\" becomes \"Tel[phone]\""
+        - "\"Ref 3412345678\" and every existing UNCHANGED string survive verbatim"
+        - "Every existing REDACTED case still yields its r1 result"
+        - "Every listing_text row and every snapshot summary records redaction_version r2"
+      tdd:
+        red:
+          test_file: "tests/test_silver_redaction.py"
+          change: |
+            Add "34600000000": "[phone]" and "Tel34600000000": "Tel[phone]" to REDACTED, add
+            "Ref 3412345678" to UNCHANGED, and expect ["r2", "r2"] in
+            test_every_row_records_the_redaction_version.
+          command: "python -m unittest tests.test_silver_redaction -v"
+          expected_failure: |
+            test_phone_numbers_and_names_are_replaced fails: both glued strings come back
+            unchanged. test_every_row_records_the_redaction_version fails: "r1" != "r2".
+            test_prices_references_and_years_survive passes (guard).
+        green:
+          change: |
+            Add the `34` alternative in src/silver/sql/redact.sql; set REDACTION_VERSION = "r2" in
+            src/silver/rebuild.py; change the "r1" expectations to "r2" in
+            tests/test_silver_rebuild.py:79 and tests/test_silver_listing_incremental.py:181.
+          command: "python -m unittest tests.test_silver_redaction tests.test_silver_rebuild tests.test_silver_listing_incremental -v"
+        refactor:
+          change: "Header comment of redact.sql names r2 and the glued prefix."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/redact.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_redaction.py"
+        - "tests/test_silver_rebuild.py"
+        - "tests/test_silver_listing_incremental.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "analysis/**"
+        - "tests/test_silver_sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/redact.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_redaction.py"
+        - "tests/test_silver_rebuild.py"
+        - "tests/test_silver_listing_incremental.py"
+
+    - id: "1.2"
+      title: "Names in capitals"
+      description: |
+        Let the name word of redact_personal accept either a capitalised word or a word of two or
+        more capitals. Extend the header comment.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["1.1"]
+      branch: "feature/redaction-r2/1.2-capital-names"
+      commit_message: "fix(silver): redaction r2 takes names written in capitals"
+      acceptance_criteria:
+        - "\"Sr. PÉREZ\" becomes \"[name]\" and \"Dña GARCÍA llama\" becomes \"[name] llama\""
+        - "\"Sra. de\" and \"Sr. y\" survive verbatim"
+        - "Titles stay verbatim"
+      tdd:
+        red:
+          test_file: "tests/test_silver_redaction.py"
+          change: |
+            Add "Sr. PÉREZ": "[name]" and "Dña GARCÍA llama": "[name] llama" to REDACTED; add
+            "Sra. de" and "Sr. y" to UNCHANGED.
+          command: "python -m unittest tests.test_silver_redaction -v"
+          expected_failure: |
+            test_phone_numbers_and_names_are_replaced fails: "Sr. PÉREZ" comes back unchanged
+            (r1 requires lower-case letters after the capital) and "Dña GARCÍA llama" likewise.
+            The UNCHANGED guards pass.
+        green:
+          change: "Replace [a-záéíóúñ]+ after the capital by ([a-záéíóúñ]+|[A-ZÁÉÍÓÚÑ]+) in redact.sql."
+          command: "python -m unittest tests.test_silver_redaction -v"
+        refactor:
+          change: "Header comment names the capitals form."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/redact.sql"
+        - "tests/test_silver_redaction.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/redact.sql"
+        - "tests/test_silver_redaction.py"
+
+    - id: "1.3"
+      title: "Document r2"
+      description: |
+        In docs/silver-rebuild.md, the listing_text row (line ~105) describes r2: phone numbers
+        with or without +34, 0034 or a glued 34 -> [phone]; an honorific plus a capitalised or
+        all-capitals word -> [name]; a pattern change is r3, never an edit of r2. The snapshot
+        example table (line ~237) shows r2.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.25
+      depends_on: ["1.2"]
+      branch: "feature/redaction-r2/1.3-docs"
+      commit_message: "docs(silver): describe redaction r2"
+      acceptance_criteria:
+        - "docs/silver-rebuild.md names r2 and both additions, and no longer names r1 as current"
+        - "The leak guard passes"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+
+    - id: "2.1"
+      title: "Deploy the r2 image and backfill Silver (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR (explicit
+        user approval; GitHub activity hours).
+        1. Wait for GitHub Actions to publish the image of the merge commit (ghcr, tag = SHA).
+        2. In the operator's local, gitignored infra/silver/silver.auto.tfvars, set silver_image to
+           that SHA tag; `terraform apply` in infra/silver. Never stage, print or commit the file.
+        3. In the same session (review L1), run "A manual backfill in AWS" from
+           docs/silver-rebuild.md: disable the event source mapping, run the task with
+           --mode backfill --metrics, re-enable the mapping when it exits 0.
+        4. Run "The equality check" from docs/silver-rebuild.md: compare row counts per table and
+           the ingest log against a local backfill of the same landing. Counts only.
+        Every AWS action needs explicit user approval in chat. No commit.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["1.3"]
+      branch: "main"
+      commit_message: ""
+      acceptance_criteria:
+        - "The backfill task exits 0"
+        - "The new listing_text snapshot summary records redaction_version r2"
+        - "Row counts per table and the ingest log match a local backfill of the same landing"
+      tdd: null
+      validation_commands:
+        - "aws ecs describe-tasks (exit code of the backfill task is 0)"
+        - "Athena: SELECT summary FROM \"listing_text$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+      allowed_files: []
+      forbidden_files:
+        - "infra/silver/silver.auto.tfvars"
+        - "infra/silver/terraform.tfvars"
+        - "infra/silver/backend.tfvars"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous SHA, apply, and run a backfill; or roll the tables back to their pre-backfill snapshots"
+      files_to_create: []
+      files_to_modify: []
+
+    - id: "2.2"
+      title: "Residue rerun and implementation note"
+      description: |
+        Take the new snapshot set (no Silver task running). Run analysis/silver-quality/06_redaction.sql
+        (from the FEATURE-005 integration branch) privately with the new snapshot ids, plus
+        `SELECT count_if(redaction_version <> 'r2'), count(*) FROM listing_text`. Write the counts,
+        never values, with the snapshot ids' date, to
+        dev/plans/implementations/FEATURE-006-redaction-r2.md; set the feature plan's status to
+        complete, tick its success criteria and add the progress-log entry; update the registry
+        row. Branch from main after the Phase 1 merge; it reaches main through its own PR
+        (explicit user approval).
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.1"]
+      branch: "feature/redaction-r2/2.2-backfill-record"
+      commit_message: "docs(plans): FEATURE-006 backfill and residue counts"
+      acceptance_criteria:
+        - "phone_glued_country_code = 0, r1_phone_residue = 0, name_not_capitalised <= 2"
+        - "No row of the current listing_text has a redaction_version other than r2"
+        - "The note holds counts only; the leak guard and workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-006-redaction-r2.md"
+        - "dev/plans/FEATURE-006-redaction-r2.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-006-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+        - "docs/data-quality/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-006-redaction-r2.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-006-redaction-r2.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-006-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/redaction-r2/integration"
+    task_branch_strategy: |
+      The integration branch exists (it holds the plan, review and this file). Task 1.1 starts from
+      it; 1.2 starts from the integration branch after 1.1 is merged; 1.3 after 1.2. Tasks 1.1 and
+      1.2 touch the same macro and test file, so they never run in parallel. Task 2.1 makes no
+      commit. Task 2.2 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified Phase 1 task branch into the integration
+      branch with --no-ff in the order 1.1, 1.2, 1.3, never rewriting history, and run
+      validation.final_commands there. The final PR goes from the integration branch to main.
+      Task 2.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["fix", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "fix(silver): redaction r2"
+    final_pr_description: |
+      Implements Phase 1 of FEATURE-006: redaction r2 takes phone numbers glued to a 34 prefix and
+      names written in capitals. See dev/reviews/REVIEW-FEATURE-006.md (approved). History reaches
+      r2 by the operator backfill of task 2.1 after merge.
+
+  notes:
+    - "Never print, log or commit a real description, number or name; Phase 2 outputs are counts only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: never stage, print or edit them except silver_image in silver.auto.tfvars, by the operator, in task 2.1."
+    - "Old Iceberg snapshots keep r1 text; expiring them is the user's decision after FEATURE-005 closes, not part of this feature."
+    - "dev/plans/README.md also changes on the FEATURE-005 branch; resolve the one-line conflict in whichever PR merges second."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
