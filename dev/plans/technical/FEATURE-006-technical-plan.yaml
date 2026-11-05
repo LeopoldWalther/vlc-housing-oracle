@@ -207,7 +207,7 @@ technical_plan:
         4. Run "The equality check" from docs/silver-rebuild.md: compare row counts per table and
            the ingest log against a local backfill of the same landing. Counts only.
         Every AWS action needs explicit user approval in chat. No commit.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.3"]
@@ -243,7 +243,7 @@ technical_plan:
         complete, tick its success criteria and add the progress-log entry; update the registry
         row. Branch from main after the Phase 1 merge; it reaches main through its own PR
         (explicit user approval).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.1"]
