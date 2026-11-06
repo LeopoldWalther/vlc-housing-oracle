@@ -1,7 +1,7 @@
 # FEATURE-006 — Redaction r2
 
-**Status:** 🟡 In progress · **Effort:** S (~3h) · **Priority:** High
-**Branch root:** `feature/redaction-r2` · **Created:** 2026-11-01 · **Updated:** 2026-11-03
+**Status:** 🟢 Complete · **Effort:** S (~3h) · **Priority:** High
+**Branch root:** `feature/redaction-r2` · **Created:** 2026-11-01 · **Updated:** 2026-11-05
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-006.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-006-technical-plan.yaml`.
@@ -99,17 +99,17 @@ redaction version `r2`, and apply it to all of Silver's history with one backfil
 
 ### Phase 1 — r2 patterns, test-first
 
-- [ ] **1.1 Glued country code.** RED: add `"34600000000"` → `"[phone]"` and
+- [x] **1.1 Glued country code.** RED: add `"34600000000"` → `"[phone]"` and
     `"Tel34600000000"` → `"Tel[phone]"` to `REDACTED`, plus a guard that `"Ref 3412345678"` stays
     unchanged (a `34` followed by `1`), and change the version test to expect `"r2"`; run
     `tests/test_silver_redaction.py` and see the two glued cases and the version fail. GREEN: the
     `34` alternative and `REDACTION_VERSION = "r2"`; update the `"r1"` expectations in
     `tests/test_silver_rebuild.py` and `tests/test_silver_listing_incremental.py`. REFACTOR: macro
     comment.
-- [ ] **1.2 Names in capitals.** RED: `"Sr. PÉREZ"` → `"[name]"` and `"Dña GARCÍA llama"` →
+- [x] **1.2 Names in capitals.** RED: `"Sr. PÉREZ"` → `"[name]"` and `"Dña GARCÍA llama"` →
     `"[name] llama"`; add `"Sra. de"` and `"Sr. y"` to `UNCHANGED` (lower-case words survive).
     GREEN: the alternation in the name word. REFACTOR: none expected.
-- [ ] **1.3 Docs.** `docs/silver-rebuild.md`: the `listing_text` row and the snapshot example
+- [x] **1.3 Docs.** `docs/silver-rebuild.md`: the `listing_text` row and the snapshot example
     name r2 and its two additions.
 
 ### Phase 2 — history
@@ -118,13 +118,13 @@ Phase 2 starts only after the Phase 1 PR is merged to `main` (user approval, Git
 hours): GitHub Actions builds the image only on a push to `main` and tags it with the commit SHA
 (review M1).
 
-- [ ] **2.1 Deploy and backfill (operator, no commit).** Wait for the image of the merge commit,
+- [x] **2.1 Deploy and backfill (operator, no commit).** Wait for the image of the merge commit,
     set `silver_image` to its SHA tag in the operator's local, gitignored `silver.auto.tfvars`, and
     `terraform apply`; then, in the same session, run the manual backfill from
     `docs/silver-rebuild.md` with the event source mapping disabled (review L1). Validation: the
     task exits 0, the new `listing_text` snapshot summary says `redaction_version = r2`, and the
     equality check against a local backfill of the same landing matches row counts per table.
-- [ ] **2.2 Residue rerun and record.** Pin `06_redaction.sql` to the new snapshot ids in a
+- [x] **2.2 Residue rerun and record.** Pin `06_redaction.sql` to the new snapshot ids in a
     private copy and run it: `phone_glued_country_code` = 0, `name_not_capitalised` ≤ 2 (the two
     lower-case false positives), `r1_phone_residue` = 0, and no row of the current `listing_text`
     has a `redaction_version` other than `r2`. Record the counts, never values, in
@@ -172,11 +172,11 @@ Athena scan of a few MB: well under $0.10.
 
 ## Success criteria
 
-- [ ] The new redaction tests failed first and pass; the full suite, ruff and the leak guard pass.
-- [ ] Silver's current `listing_text` records `redaction_version = 'r2'` on every row (0 rows otherwise).
-- [ ] The residue rerun shows `phone_glued_country_code` = 0 and `name_not_capitalised` ≤ 2.
-- [ ] The equality check matches row counts between the AWS and a local backfill.
-- [ ] No real value appears in the repository, in a log, or in the chat.
+- [x] The new redaction tests failed first and pass; the full suite, ruff and the leak guard pass.
+- [x] Silver's current `listing_text` records `redaction_version = 'r2'` on every row (0 rows otherwise).
+- [x] The residue rerun shows `phone_glued_country_code` = 0 and `name_not_capitalised` ≤ 2.
+- [x] The equality check matches row counts between the AWS and a local backfill.
+- [x] No real value appears in the repository, in a log, or in the chat.
 
 ## Open questions & risks
 
@@ -196,3 +196,8 @@ Athena scan of a few MB: well under $0.10.
     image comes from a merge to `main` and the tfvars file is a local operator file; M2, the record
     goes to this feature's implementation note and the "≥ r1 counts" criterion is replaced; L1, apply
     and backfill in one session.
+- **2026-11-04** — Phase 1 (tasks 1.1–1.3) merged to `main` through the final PR.
+- **2026-11-05** — Task 2.1: image of the merge commit deployed, AWS backfill exited 0, row counts
+    and ingest log match a local backfill. Task 2.2: residue rerun meets every criterion; counts in
+    [`implementations/FEATURE-006-redaction-r2.md`](implementations/FEATURE-006-redaction-r2.md).
+    Feature complete.
