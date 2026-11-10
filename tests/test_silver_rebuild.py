@@ -76,7 +76,7 @@ class TestBackfill(unittest.TestCase):
             with self.subTest(table=table):
                 self.assertEqual(landing_v3_sha256(), summary["landing_contract_sha256"])
                 self.assertEqual("silver-v1", summary["transformation_version"])
-                self.assertEqual("r1", summary["redaction_version"])
+                self.assertEqual("r2", summary["redaction_version"])
                 self.assertEqual(STARTED_AT.isoformat(), summary["rebuild_started_at"])
                 self.assertEqual(str(result.pending), summary["landing_run_count"])
 
@@ -89,7 +89,9 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(set(SILVER_TABLES), set(result.snapshot_ids))
 
     def test_non_conforming_landing_creates_no_table(self) -> None:
-        next(self.landing.glob("listing_text/*/run=*/part-0.parquet")).unlink()
+        # A backfill reads only the text files of chosen records, so the removed file must be one
+        # of those: glob order differs between file systems, sorted order does not.
+        sorted(self.landing.glob("listing_text/*/run=*/part-0.parquet"))[0].unlink()
 
         with self.assertRaises(LandingContractError):
             self.run_backfill()
