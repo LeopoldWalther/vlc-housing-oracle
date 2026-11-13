@@ -360,7 +360,7 @@ technical_plan:
         - a sketch of the follow-up feature: a labels table with a quality_version, flagged and
           never filtered.
         Update the plan's progress log and the success criteria.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["2.1", "2.2", "2.3", "2.5", "2.6", "3.1"]
