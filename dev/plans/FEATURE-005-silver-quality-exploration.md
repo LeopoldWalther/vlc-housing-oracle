@@ -1,7 +1,7 @@
 # FEATURE-005 — Silver data-quality exploration
 
-**Status:** 🟡 In progress · **Effort:** M (~10h) · **Priority:** High
-**Branch root:** `feature/silver-quality-exploration` · **Created:** 2026-10-30 · **Updated:** 2026-10-31
+**Status:** 🟢 Complete · **Effort:** M (~10h) · **Priority:** High
+**Branch root:** `feature/silver-quality-exploration` · **Created:** 2026-10-30 · **Updated:** 2026-11-13
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-005.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-005-technical-plan.yaml`.
@@ -197,17 +197,17 @@ a count that must agree with another source), and only then is its result record
 
 ### Phase 1 — Frame
 
-- [ ] **1.1 Exploration folder and rules.** Create `analysis/silver-quality/README.md`. It says how
+- [x] **1.1 Exploration folder and rules.** Create `analysis/silver-quality/README.md`. It says how
     to run the files in Athena, that only aggregates may be committed, and which snapshot query
     records the data state. Validation: the leak guard passes on the new folder.
 
 ### Phase 2 — Measure, one file per dimension
 
-- [ ] **2.1 Completeness.** `01_completeness.sql`: non-null rate of every attribute in `listing`
+- [x] **2.1 Completeness.** `01_completeness.sql`: non-null rate of every attribute in `listing`
     by operation and property type; listings without a detail record; the empty-card share in
     `observation`. Validation: the detail-record count equals `count(detail_observed_at)` and the
     listing count equals the plain row count.
-- [ ] **2.2 Plausibility.** `02_plausibility.sql`:
+- [x] **2.2 Plausibility.** `02_plausibility.sql`:
     - percentiles of price, built and usable area, price per m², rooms, bathrooms, year built,
         and community fee, by operation and property type;
     - counts per rule candidate: bounds per operation; usable area above built area; rooms 0
@@ -217,7 +217,7 @@ a count that must agree with another source), and only then is its result record
 
     Validation: every rule count is re-derived once by an independent `count_if` in a second
     query.
-- [ ] **2.3 Location.** `03_location.sql`:
+- [x] **2.3 Location.** `03_location.sql`:
     - coordinate completeness and the distribution of decimal places;
     - points shared by more than one listing;
     - distance of each listing from its municipality's median coordinate, as percentiles plus
@@ -226,7 +226,7 @@ a count that must agree with another source), and only then is its result record
         district.
 
     Validation: the province bounding-box count equals the earlier evidence (0).
-- [ ] **2.4 Duplicates.** `04_duplicates.sql`:
+- [x] **2.4 Duplicates.** `04_duplicates.sql`:
     - cluster counts for tier A, and pair counts plus listings-in-pairs for tiers A0, A±5, A±10,
         B, and C, by operation;
     - the price-gap distribution within A0 pairs, which shows how far agencies' prices for one
@@ -241,7 +241,7 @@ a count that must agree with another source), and only then is its result record
 
     Validation: the pair counts nest (A0 ≥ A±10 ≥ A±5 ≥ B ≥ C, and A0 ≥ A), and tier A's pair
     count agrees with the architect's evidence within the change since then.
-- [ ] **2.5 Temporal.** `05_temporal.sql`:
+- [x] **2.5 Temporal.** `05_temporal.sql`:
     - **The sweep rhythm:** the revisit-interval percentiles and the days each sweep needs to
         walk every area (`walk`). These confirm or adjust the 7-day `RAMP_UP_END` and
         `CENSOR_START`.
@@ -257,7 +257,7 @@ a count that must agree with another source), and only then is its result record
     Validation: the run count equals `landing_ingest`'s row count, and the measured median
     revisit interval agrees with the sweep length the window assumes. Missed listings are then
     either explained by the walk coverage or reported to the acquisition repository.
-- [ ] **2.6 Redaction residue.** `06_redaction.sql` (corrected by review M6) counts what `r1`'s
+- [x] **2.6 Redaction residue.** `06_redaction.sql` (corrected by review M6) counts what `r1`'s
     exact patterns, copied from `src/silver/sql/redact.sql`, leave behind:
     - phone digits classified by their surroundings: standalone, glued to a letter, glued
         country code (`34` + 9 digits), or inside a longer number;
@@ -271,7 +271,7 @@ a count that must agree with another source), and only then is its result record
 
 ### Phase 3 — Judge and report
 
-- [ ] **3.1 Manual precision of duplicate tiers** (operator task; corrected by review M2).
+- [x] **3.1 Manual precision of duplicate tiers** (operator task; corrected by review M2).
     - **The sample:** the operator privately draws 30 pairs from each exclusive stratum, so each
         stratum's precision is known on its own: C; B without C; A±5 without B; A0 without A±10.
         The pairs are ordered by a hash of their ids, not chosen by hand, and only concurrent
@@ -280,7 +280,7 @@ a count that must agree with another source), and only then is its result record
         the same property: photos, floor plan, description.
     - **What is recorded:** counts per stratum only (same / different / unsure / page gone). The
         sample and its ids stay outside the repository.
-- [ ] **3.2 Findings document.** `docs/data-quality/silver-quality-2026-11.md` covers:
+- [x] **3.2 Findings document.** `docs/data-quality/silver-quality-2026-11.md` covers:
     - the Silver snapshot ids;
     - per dimension, the measured rates and what they mean for each candidate use case;
     - the redaction result;
@@ -345,18 +345,22 @@ cents. Result files under the workgroup's result prefix are a few KB each.
 
 ## Success criteria
 
-- [ ] Six exploration queries exist, each returning aggregates only, and each passed its
+- [x] Six exploration queries exist, each returning aggregates only, and each passed its
     validation step on a recorded Silver snapshot.
 - [ ] The duplicate tiers A, B, and C are measured by operation, split into concurrent and
     sequential, and their precision is known from at least 30 manually judged pairs per tier.
-- [ ] Each plausibility rule candidate has a measured hit count and a proposed decision (adopt
+    **Met with a deviation:** the tiers are measured as planned, but fewer pairs were judged (18
+    in tier C, 24 in "B without C" over two samples, 18 and 11 in the two wider strata), because
+    listings went offline within days and the first verdicts showed the tiers were the wrong cut.
+    Three targeted samples replaced the four strata of 30; the findings document records them.
+- [x] Each plausibility rule candidate has a measured hit count and a proposed decision (adopt
     with threshold, or drop).
-- [ ] The redaction residue is measured and every confirmed contact detail is reported as a
+- [x] The redaction residue is measured and every confirmed contact detail is reported as a
     privacy issue.
-- [ ] The findings document proposes the follow-up feature's rules, thresholds, and expected flag
+- [x] The findings document proposes the follow-up feature's rules, thresholds, and expected flag
     rates, citing the source query for every number.
-- [ ] The existing suite, ruff, leak guard, and workflow validator pass.
-- [ ] No row values, listing ids, single-listing coordinates, or text excerpts are committed.
+- [x] The existing suite, ruff, leak guard, and workflow validator pass.
+- [x] No row values, listing ids, single-listing coordinates, or text excerpts are committed.
 
 ## Open questions & risks
 
@@ -398,3 +402,13 @@ cents. Result files under the workgroup's result prefix are a few KB each.
     - L1: the ramp-up is tied to the measured sweep completion.
 
     The effort grows to ~10h for the manual check.
+- **2026-11-01** — Tasks 1.1 and 2.1–2.6 merged into the integration branch. The residue scan
+    (2.6) confirmed two contact details that `r1` missed; they became FEATURE-006 (redaction
+    `r2`, complete on 2026-11-05).
+- **2026-11-13** — Task 3.1: the manual check ran as three samples between 2026-11-03 and
+    2026-11-13 instead of four strata of 30 pairs (see the success criteria). It supports one
+    "certain" duplicate rule with 29 of 29 judgeable pairs and shows every tested relaxation to be
+    uncertain. Task 3.2: the six queries were rerun on the pinned snapshot set and the findings
+    are in [`docs/data-quality/silver-quality-2026-11.md`](../../docs/data-quality/silver-quality-2026-11.md).
+    New in the findings: `rooms` is never 1 in Silver, most likely an upstream reading defect.
+    Feature complete.
