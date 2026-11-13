@@ -322,7 +322,7 @@ technical_plan:
         - The implementer hands the sample to the user privately, outside the repository.
         - The user judges each pair from the listing pages: same / different / unsure / page gone.
         - Only the counts per stratum come back.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2.5
       depends_on: ["2.4"]
