@@ -353,7 +353,7 @@ technical_plan:
       title: "The command reports the table"
       description: |
         _report prints "listing_event: snapshot <id>" after the listing_text line.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.25
       depends_on: ["2.1"]
