@@ -1,6 +1,6 @@
 # FEATURE-002 — Listing events: disappeared and reappeared
 
-**Status:** 🟡 In progress · **Effort:** M (~8h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** M (~8h) · **Priority:** High
 **Branch root:** `feature/listing-event` · **Created:** 2026-11-14 · **Updated:** 2026-11-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-002.md`).
@@ -206,7 +206,7 @@ in task 2.1, so the existing suite stays green after every task (review M1).
 
 ### Phase 1 — The rule
 
-- [ ] **1.1 A disappearance.**
+- [x] **1.1 A disappearance.**
     - RED: a listing seen in one area on day 1, and a complete live walk of that area on day 3
         that does not see it. The test expects one `disappeared` row with `event_date` day 3, the
         area, the walk's `run_id`, `last_seen_date` day 1 and the transformation version. It
@@ -214,7 +214,7 @@ in task 2.1, so the existing suite stays green after every task (review M1).
     - GREEN: `listing_event.sql` with sightings, evidence days and the first evidence day in a
         gap; `listing_events(connection, walk, observation)` in `src/silver/rebuild.py`.
     - REFACTOR: name the common table expressions after the rule's terms.
-- [ ] **1.2 What is not evidence.** One test per case, each expecting no event:
+- [x] **1.2 What is not evidence.** One test per case, each expecting no event:
     - an incomplete walk; a replay; a legacy walk whose `complete` and `is_replay` are null;
     - a walk of another area; a walk on the day of the sighting or before it;
     - a walk whose run ends on the next UTC day;
@@ -222,13 +222,13 @@ in task 2.1, so the existing suite stays green after every task (review M1).
 
     And one expecting that an empty-card sighting closes a gap like any other. GREEN adds the
     filters and the home-area rule.
-- [ ] **1.3 A return, and more than one gap.**
+- [x] **1.3 A return, and more than one gap.**
     - RED: a listing seen, missed by a complete walk, and seen again expects a `disappeared` and
         a `reappeared` with the right dates, areas and run ids; a listing with two such gaps
         expects four events; a listing whose latest real card moved to a second area expects the
         second area's walks to be its evidence.
     - GREEN: the `reappeared` branch.
-- [ ] **1.4 One event per gap, deterministically.**
+- [x] **1.4 One event per gap, deterministically.**
     - RED: three complete walks inside one gap expect a single `disappeared` on the first; two
         complete walks of the area on that day expect the `run_id` of the run that started
         earlier; rows come back ordered by listing, date and type; no walks and no sightings give
@@ -237,7 +237,7 @@ in task 2.1, so the existing suite stays green after every task (review M1).
 
 ### Phase 2 — Maintenance in the pipeline
 
-- [ ] **2.1 The table is written in both modes, and every sequence gives the same events.**
+- [x] **2.1 The table is written in both modes, and every sequence gives the same events.**
     - RED, all written before any pipeline code:
         - `listing_event` joins `SILVER_TABLES`, so `tests/test_silver_rebuild.py` and
             `tests/test_silver_incremental.py` fail: `process_landing` writes no such table;
@@ -251,17 +251,17 @@ in task 2.1, so the existing suite stays green after every task (review M1).
         the result after the listings and before the ingest log, in both modes, and returns its
         snapshot id.
     - REFACTOR: keep the table list and the report in one order.
-- [ ] **2.2 The command reports the table.**
+- [x] **2.2 The command reports the table.**
     - RED: `tests/test_silver_cli.py` expects a `listing_event: snapshot <id>` line.
     - GREEN: one line in `_report`.
 
 ### Phase 3 — Documentation and the first real run
 
-- [ ] **3.1 Runbook and README.** Add the table to "The tables" in `docs/silver-rebuild.md` with
+- [x] **3.1 Runbook and README.** Add the table to "The tables" in `docs/silver-rebuild.md` with
     its rule, the censoring and retraction notes, the whole-table replacement and the example
     output line; update the README status sentence from five to six tables. Validation: the leak
     guard and the workflow validator pass.
-- [ ] **3.2 Operator run.** After the merge, with explicit approval: set `silver_image` to the
+- [x] **3.2 Operator run.** After the merge, with explicit approval: set `silver_image` to the
     new image and apply (a new task definition revision only), let the next landing commit or the
     catch-up run, and confirm from the task log that `listing_event` got a snapshot and how long
     the task took. Then compare, in Athena and as counts only, the table's rows per `event_type`
@@ -327,18 +327,19 @@ $0/month — no resources added or changed.
 
 ## Success criteria
 
-- [ ] `listing_event` exists in Silver with the columns above, and every row's key is unique.
-- [ ] Every case of phase 1 is a test that failed first: no event from an incomplete walk, a
+- [x] `listing_event` exists in Silver with the columns above, and every row's key is unique.
+- [x] Every case of phase 1 is a test that failed first: no event from an incomplete walk, a
     replay, a legacy walk, another area's walk, a midnight-crossing run, or for a listing without
-    a real card.
-- [ ] Any sequence of landing commits and a backfill give the same `listing_event` rows.
-- [ ] A late run that fills a gap removes the event, and a repeated run changes nothing.
-- [ ] The first real run's counts per event type equal the same rule written in Athena SQL over
+    a real card. (The replay and null cases already passed after 1.1 and stay as guards; see
+    the implementation note.)
+- [x] Any sequence of landing commits and a backfill give the same `listing_event` rows.
+- [x] A late run that fills a gap removes the event, and a repeated run changes nothing.
+- [x] The first real run's counts per event type equal the same rule written in Athena SQL over
     the same Silver snapshots.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak and workflow checks pass
-- [ ] The runbook documents the table, its censoring and its retraction behavior
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak and workflow checks pass
+- [x] The runbook documents the table, its censoring and its retraction behavior
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -368,3 +369,7 @@ $0/month — no resources added or changed.
         run records the task duration;
     - M3: the first real run is checked against an Athena implementation of the rule instead of
         a local copy of real landing.
+- **2026-11-14** — Implemented (PR #16, merged), deployed and first real run recorded: 8,056
+    disappeared and 396 reappeared, equal row for row to the rule in Athena. Two RED cases of 1.2
+    already passed after 1.1 and stay as guards. See
+    [the implementation note](implementations/FEATURE-002-listing-event.md).
