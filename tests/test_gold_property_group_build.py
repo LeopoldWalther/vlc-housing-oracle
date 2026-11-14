@@ -103,20 +103,39 @@ class BuildTest(SilverFixture):
     def test_the_report_counts_listings_and_groups(self) -> None:
         report = self.build()
 
-        # No synthetic listing has coordinates yet, so every listing is its own group.
+        # The synthetic landing holds one property under two listing ids; all else is alone.
         listings = len(self.listings_with_detail())
         self.assertEqual(
             report,
             BuildReport(
                 listings=listings,
-                groups=0,
-                surplus=0,
+                groups=1,
+                surplus=1,
                 incomplete_groups=0,
                 groups_above_five=0,
-                largest_group=1,
+                largest_group=2,
                 snapshot_id=self.listing_snapshot_id(),
             ),
         )
+
+    def test_the_synthetic_duplicate_is_the_only_group(self) -> None:
+        self.build()
+
+        grouped = [row for row in self.written_rows() if row["group_size"] > 1]
+        self.assertEqual(
+            [
+                (row["source_listing_id"], row["property_group_id"], row["group_is_complete"])
+                for row in grouped
+            ],
+            [
+                ("syn-twin-a", "syn:syn-twin-a", True),
+                ("syn-twin-b", "syn:syn-twin-a", True),
+            ],
+        )
+        new_unit = [
+            row for row in self.written_rows() if row["source_listing_id"] == "syn-new-unit"
+        ]
+        self.assertEqual([row["group_size"] for row in new_unit], [1])
 
     def test_a_catalog_without_a_listing_table_is_refused_and_nothing_is_written(self) -> None:
         self.out.parent.mkdir(parents=True, exist_ok=True)
