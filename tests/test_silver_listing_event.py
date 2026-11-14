@@ -34,6 +34,19 @@ OBSERVATION_SCHEMA = pa.schema(
     ]
 )
 
+EVENT_SCHEMA = pa.schema(
+    [
+        ("source", pa.string()),
+        ("source_listing_id", pa.string()),
+        ("event_type", pa.string()),
+        ("event_date", pa.date32()),
+        ("area", pa.string()),
+        ("run_id", pa.string()),
+        ("last_seen_date", pa.date32()),
+        ("transformation_version", pa.string()),
+    ]
+)
+
 
 def day(n: int) -> date:
     return date(2026, 10, n)
@@ -199,3 +212,41 @@ class Reappearance(unittest.TestCase):
                 summary(events([walk(3, area="beta-sale")], sightings)),
                 [(day(3), "disappeared", "beta-sale", run_id(3, "beta-sale"), day(2))],
             )
+
+
+class Determinism(unittest.TestCase):
+    def test_only_the_first_evidence_day_of_a_gap_is_a_disappearance(self) -> None:
+        rows = events([walk(n) for n in (1, 3, 4, 6)], [sighting(1)])
+
+        self.assertEqual(summary(rows), [(day(3), "disappeared", AREA, run_id(3), day(1))])
+
+    def test_the_run_that_started_first_names_the_evidence_day(self) -> None:
+        # An imported run's id sorts after the timestamped ids although it started earlier.
+        rows = events(
+            [walk(1), walk(3, started_hour=8), walk(3, run="import-alba", started_hour=5)],
+            [sighting(1)],
+        )
+
+        self.assertEqual([row["run_id"] for row in rows], ["import-alba"])
+
+    def test_rows_are_ordered_and_unique_per_listing_type_and_day(self) -> None:
+        rows = events(
+            [walk(n) for n in (1, 3, 5, 7)],
+            [sighting(5, "L2"), sighting(1, "L1"), sighting(5, "L1"), sighting(1, "L2")],
+        )
+        keys = [
+            (row["source"], row["source_listing_id"], row["event_date"], row["event_type"])
+            for row in rows
+        ]
+
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(len(keys), 6)
+
+    def test_empty_inputs_give_an_empty_table_with_the_contracts_columns(self) -> None:
+        table = listing_events(
+            duckdb.connect(), WALK_SCHEMA.empty_table(), OBSERVATION_SCHEMA.empty_table()
+        )
+
+        self.assertEqual(table.num_rows, 0)
+        self.assertEqual(table.schema, EVENT_SCHEMA)

@@ -30,7 +30,8 @@ evidence AS (
         source,
         area,
         observed_date,
-        min(run_id) AS run_id
+        -- The run that started first names the day, whatever its id's spelling.
+        arg_min(run_id, run_started_at) AS run_id
     FROM silver_walk
     WHERE complete IS true
         AND is_replay IS false
@@ -81,3 +82,4 @@ SELECT
     getvariable('transformation_version') AS transformation_version
 FROM gap
 WHERE next_seen_date IS NOT NULL
+ORDER BY source, source_listing_id, event_date, event_type
