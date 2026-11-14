@@ -1,6 +1,6 @@
 # FEATURE-007 — Property groups: one property behind several listings
 
-**Status:** 🟡 In progress · **Effort:** M (~10h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** M (~10h) · **Priority:** High
 **Branch root:** `feature/property-groups` · **Created:** 2026-11-14 · **Updated:** 2026-11-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-007.md`).
@@ -246,7 +246,7 @@ data.
 - [x] **4.1 Documentation.** `docs/gold-property-group.md` with the rule, its evidence by
     reference to the findings, the columns, the stability and privacy notes, and the command;
     the README's status and architecture lines. Validation: leak guard and workflow validator.
-- [ ] **4.2 Operator run.** After the merge and with explicit approval, because it writes the
+- [x] **4.2 Operator run.** After the merge and with explicit approval, because it writes the
     first object under a Gold prefix of the private bucket: build from the real catalog, and
     record the reported counts in
     `dev/plans/implementations/FEATURE-007-property-groups.md` beside the architect's evidence
@@ -307,17 +307,17 @@ $0/month — no resources added or changed.
 
 ## Success criteria
 
-- [ ] The pair rule is tested on both sides of every threshold and for every floor case.
-- [ ] Every listing with a detail record has exactly one row and one `property_group_id`, and
+- [x] The pair rule is tested on both sides of every threshold and for every floor case.
+- [x] Every listing with a detail record has exactly one row and one `property_group_id`, and
     the groups partition those listings.
-- [ ] A group held together only by a chain is marked incomplete.
-- [ ] The dataset names its rule version and the Silver snapshot it was built from, and a
+- [x] A group held together only by a chain is marked incomplete.
+- [x] The dataset names its rule version and the Silver snapshot it was built from, and a
     repeated build gives the same rows.
-- [ ] The real run's counts are recorded and compared with the architect's evidence.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak and workflow checks pass
-- [ ] The dataset's contract, privacy rule and command are documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] The real run's counts are recorded and compared with the architect's evidence.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak and workflow checks pass
+- [x] The dataset's contract, privacy rule and command are documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -349,4 +349,6 @@ $0/month — no resources added or changed.
         `--out`, and the price comparison is in integers;
     - M4: group-level precision is an accepted, documented and reported limit;
     - M5: the synthetic detail records need coordinates before any synthetic pair can exist.
-
+- **2026-11-14** — Implemented (PR #17, merged) and first real build written under
+    `gold/v1`: 1,832 groups over 4,849 of 21,840 listings, 187 incomplete, largest 19, equal to
+    the evidence. See [the implementation note](implementations/FEATURE-007-property-groups.md).

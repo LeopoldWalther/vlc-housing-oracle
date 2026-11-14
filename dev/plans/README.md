@@ -14,7 +14,7 @@ speculative roadmap: add a row only when its top-level plan exists.
 | FEATURE-004 | [Incremental Silver from landing v3, run by AWS](FEATURE-004-incremental-silver-from-landing-v3.md) | 🟢 Complete | `feature/incremental-silver-v3` | L (~28h) | High | architect |
 | FEATURE-005 | [Silver data-quality exploration](FEATURE-005-silver-quality-exploration.md) | 🟢 Complete | `feature/silver-quality-exploration` | M (~10h) | High | architect |
 | FEATURE-006 | [Redaction r2](FEATURE-006-redaction-r2.md) | 🟢 Complete | `feature/redaction-r2` | S (~3h) | High | architect |
-| FEATURE-007 | [Property groups: one property behind several listings](FEATURE-007-property-groups.md) | 🟡 In progress | `feature/property-groups` | M (~10h) | High | architect |
+| FEATURE-007 | [Property groups: one property behind several listings](FEATURE-007-property-groups.md) | 🟢 Complete | `feature/property-groups` | M (~10h) | High | architect |
 
 **Status legend:** 🔵 Planned · 🟡 In progress · 🟢 Complete · 🔴 Blocked · ⚪ Superseded
 
