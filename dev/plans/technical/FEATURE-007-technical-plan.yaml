@@ -478,7 +478,7 @@ technical_plan:
         listing-level and private, and only aggregates derived from it are published; the
         command, the catalog configuration by reference to docs/silver-rebuild.md, and an example
         on synthetic data. README.md: the status sentence and one line under Architecture.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.3"]
