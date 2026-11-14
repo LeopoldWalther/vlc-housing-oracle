@@ -17,7 +17,9 @@ JOIN gold_listing AS b
     AND a.bathrooms = b.bathrooms
     AND a.sqm_built = b.sqm_built
     AND (a.source, a.source_listing_id) < (b.source, b.source_listing_id)
-WHERE 100 * greatest(a.price_eur, b.price_eur)::BIGINT
+WHERE a.detail_observed_at IS NOT NULL
+    AND b.detail_observed_at IS NOT NULL
+    AND 100 * greatest(a.price_eur, b.price_eur)::BIGINT
         <= (100 + getvariable('price_gap_max_percent')) * least(a.price_eur, b.price_eur)::BIGINT
     AND haversine_meters(a.latitude, a.longitude, b.latitude, b.longitude)
         < getvariable('distance_max_meters')

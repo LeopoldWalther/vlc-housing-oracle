@@ -192,7 +192,7 @@ data.
     - GREEN: `pairs.sql` with the equality join, the price and distance conditions, and a
         haversine macro; a function that runs it on an Arrow table of listings.
     - REFACTOR: thresholds as named constants.
-- [ ] **1.2 What is not a pair.** One test per case, each expecting no pair:
+- [x] **1.2 What is not a pair.** One test per case, each expecting no pair:
     - a different operation, municipality, room count, bathroom count or built area;
     - a missing `rooms` on one side and on both sides;
     - a price gap just above 5%, with exactly 5% expected to pair;
