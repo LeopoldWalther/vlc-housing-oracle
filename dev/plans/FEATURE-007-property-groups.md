@@ -226,7 +226,7 @@ data.
         whose columns and types are the contract above; a second build gives the same rows; a
         catalog without a `listing` table is refused with a specific error.
     - GREEN: read the needed columns at the current snapshot, compute, write.
-- [ ] **3.2 A duplicate in the synthetic data.**
+- [x] **3.2 A duplicate in the synthetic data.**
     - RED: the synthetic landing gains one scenario with the same property under two listing
         ids and a third unit of a new build on another floor; the build over it expects exactly
         one group of two and every other listing alone. Today no synthetic listing has

@@ -91,25 +91,33 @@ def _detail(
     *,
     price_eur: int = 250_000,
     description: str = "Piso luminoso con balcón.",
+    **attributes: object,
 ) -> dict[str, list[LandingRow]]:
-    """One detail record and its text row, keyed alike as the contract requires."""
+    """One detail record and its text row, keyed alike as the contract requires.
+
+    ``attributes`` are further detail columns, such as coordinates, floor or condition.
+    """
     key = _area(municipality) | {
         "source_listing_id": listing_id,
         "observed_at": observed_at,
         "observed_date": observed_at.date(),
         "ingested_at": observed_at + timedelta(hours=1),
     }
-    detail = key | {
-        "extraction_version": "syn-1",
-        "property_type": "piso",
-        "price_eur": price_eur,
-        "sqm_built": 80,
-        "rooms": 3,
-        "bathrooms": 1,
-        "has_elevator_state": "true",
-        "has_terrace_state": "false_stated",
-        "has_pool_state": "unknown",
-    }
+    detail = (
+        key
+        | {
+            "extraction_version": "syn-1",
+            "property_type": "piso",
+            "price_eur": price_eur,
+            "sqm_built": 80,
+            "rooms": 3,
+            "bathrooms": 1,
+            "has_elevator_state": "true",
+            "has_terrace_state": "false_stated",
+            "has_pool_state": "unknown",
+        }
+        | attributes
+    )
     text = {
         name: key[name]
         for name in ("source", "area", "source_listing_id", "observed_at", "observed_date")
@@ -411,6 +419,7 @@ def generate_landing_v3(root: Path, *, seed: int) -> None:
         _import_without_reports(),
         _failed_run(),
         _detail_older_than_latest_card(),
+        _one_property_two_listings(),
     )
     rows: dict[str, list[LandingRow]] = {table: [] for table in landing_v3_columns()}
     for scenario in scenarios:
@@ -508,6 +517,27 @@ def _failed_run() -> dict[str, list[LandingRow]]:
             ],
             "observation": [_card("syn-failed-run", "brisa", started + timedelta(minutes=1))],
         },
+    )
+
+
+def _one_property_two_listings() -> dict[str, list[LandingRow]]:
+    # syn-twin-a and syn-twin-b: one flat advertised twice, 100 m and 2% apart, on the same floor.
+    # syn-new-unit: another unit of a new build with the same attributes, on another floor.
+    observed = _at(FIRST_DAY + timedelta(days=1), 7, 45)
+    place = {"latitude": 39.47, "longitude": -0.37}
+    listings = (
+        ("syn-twin-a", 300_000, place | {"floor": "2", "condition": "good"}),
+        ("syn-twin-b", 306_000, place | {"latitude": 39.4709, "floor": "2", "condition": "good"}),
+        ("syn-new-unit", 303_000, place | {"latitude": 39.4705, "floor": "3", "condition": "new"}),
+    )
+    return _merge(
+        *(
+            _merge(
+                {"observation": [_card(listing_id, "alba", observed, price_eur=price)]},
+                _detail(listing_id, "alba", observed, price_eur=price, **attributes),
+            )
+            for listing_id, price, attributes in listings
+        )
     )
 
 

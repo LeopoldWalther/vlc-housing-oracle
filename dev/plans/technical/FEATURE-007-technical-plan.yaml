@@ -379,7 +379,7 @@ technical_plan:
         (equal attributes, coordinates 100 m apart, same floor, prices 2% apart) and a third
         unit of a new build with the same attributes on another floor. Only this scenario sets
         coordinates, floor and condition; register it in generate_landing_v3.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["3.1"]
