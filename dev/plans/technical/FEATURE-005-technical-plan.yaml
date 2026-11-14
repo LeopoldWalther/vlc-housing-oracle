@@ -1,0 +1,421 @@
+# Technical plan for FEATURE-005 — Silver data-quality exploration.
+# Emitted by the reviewer with the approval of 2026-10-31. It carries corrections M1–M6 and L1,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-005"
+    created_by: "reviewer_agent"
+    created_at: "2026-10-31"
+    version: "1.0"
+    total_tasks: 9
+    estimated_hours: "10"
+    risk_level: "low"
+    critical_path: ["1.1", "2.4", "3.1", "3.2"]
+    feature_plan: "dev/plans/FEATURE-005-silver-quality-exploration.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-005.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured, and this feature adds no code. The suite must stay
+    # green and unchanged.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - Every query is Athena (Trino) SQL against the Glue database vlc_housing_silver, read-only.
+    - Each file starts with a comment naming its dimension and a `WITH` block of constants:
+      the snapshot id of every table it reads, its thresholds, and RAMP_UP_END / CENSOR_START
+      where temporal. Every table reference uses `FOR VERSION AS OF <snapshot_id>` (review M4).
+    - Every final SELECT returns aggregates only: counts, rates, percentiles, grouped by operation
+      and/or property type. No listing id, coordinate, price of a single listing, or text excerpt
+      appears in any committed file or in the findings document.
+    - Drill-downs that return rows (needed for the manual check) are run privately and never
+      committed.
+    - Snapshot ids are taken once per measurement round from "<table>$snapshots" when no Silver
+      task is running (check `aws ecs list-tasks --cluster vlc-housing-silver`), and the same set
+      is used by every file in that round.
+    - Duplicate tiers (review M1, M3, M5):
+        A0  = same operation, municipality, sqm_built, rooms, bathrooms
+        A   = A0 and equal price_eur              (the only tier reported as clusters)
+        A±5 = A0 and prices within 5%;  A±10 = A0 and prices within 10%
+        B   = A±5 and within the distance threshold (start: 0.003° lat, 0.004° lon ≈ 300 m)
+        C   = B and equal, non-null floor
+      Concurrent = the observation spans [first_seen, last_seen] overlap; otherwise sequential.
+      Sequential pairs count only when the later listing's first_seen > RAMP_UP_END.
+    - RAMP_UP_END = the day every area had been walked at least once (2026-09-30 on the reviewed
+      data); "new" means first_seen strictly after it, and an area first walked later uses its own
+      first walk. CENSOR_START = last collection day − 7 days (review L1).
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "Exploration folder and rules"
+      description: |
+        Create analysis/silver-quality/README.md. It covers:
+        - how to run a file in the Athena console or with `aws athena start-query-execution`
+          (workgroup primary, database vlc_housing_silver);
+        - the aggregate-only rule and the private drill-down rule;
+        - how to take the snapshot set and fill each file's constant block;
+        - the tier and window definitions from the conventions above.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: []
+      branch: "feature/silver-quality-exploration/1.1-exploration-readme"
+      commit_message: "docs(analysis): rules for the Silver quality exploration"
+      acceptance_criteria:
+        - "The README states the aggregate-only rule, the snapshot pinning, the tiers, and both time windows"
+        - "The leak guard passes"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/README.md"
+      files_to_modify: []
+
+    - id: "2.1"
+      title: "Completeness"
+      description: |
+        analysis/silver-quality/01_completeness.sql covers:
+        - the non-null rate of every listing attribute by operation and property_type;
+        - listings without a detail record;
+        - the empty-card share in observation.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.1-completeness"
+      commit_message: "docs(analysis): completeness of Silver listings"
+      acceptance_criteria:
+        - "The detail-record count equals count(detail_observed_at) and the listing count equals the plain row count on the pinned snapshot"
+        - "The output is aggregates only"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/01_completeness.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.2", "2.3", "2.4", "2.5", "2.6"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/01_completeness.sql"
+      files_to_modify: []
+
+    - id: "2.2"
+      title: "Plausibility"
+      description: |
+        analysis/silver-quality/02_plausibility.sql covers:
+        - percentiles of price, sqm_built, sqm_usable, price per m², rooms, bathrooms,
+          year_built, and community fee, by operation and property_type;
+        - a count per rule candidate:
+          - bounds per operation;
+          - usable area above built area;
+          - rooms = 0 outside studios;
+          - bathrooms above rooms + 2;
+          - year_built outside a range;
+          - a drop over 50% against prev_price_eur;
+          - a sale priced like a rent, and the reverse;
+        - disagreement between the observation's price and the detail's price on the same day.
+        Thresholds sit in the constant block.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.2-plausibility"
+      commit_message: "docs(analysis): plausibility of Silver values"
+      acceptance_criteria:
+        - "Every rule count is re-derived once by an independent count_if query with the same result"
+        - "The output is aggregates only"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/02_plausibility.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "2.3", "2.4", "2.5", "2.6"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/02_plausibility.sql"
+      files_to_modify: []
+
+    - id: "2.3"
+      title: "Location"
+      description: |
+        analysis/silver-quality/03_location.sql covers:
+        - coordinate completeness and the distribution of decimal places;
+        - points shared by more than one listing;
+        - each listing's distance from its municipality's median coordinate, as percentiles and
+          counts beyond thresholds;
+        - consistency of district against page_district, and of neighborhood within a district.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.3-location"
+      commit_message: "docs(analysis): location quality of Silver listings"
+      acceptance_criteria:
+        - "The province bounding-box count equals 0 as in the reviewed evidence, or the change is explained"
+        - "The output is aggregates only; no single-listing coordinate is returned"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/03_location.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.4", "2.5", "2.6"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/03_location.sql"
+      files_to_modify: []
+
+    - id: "2.4"
+      title: "Duplicates"
+      description: |
+        analysis/silver-quality/04_duplicates.sql uses the tiers in the conventions and covers:
+        - tier A cluster counts;
+        - pair counts and listings in at least one pair for A0, A±10, A±5, B, and C, by operation;
+        - the concurrent versus sequential split (sequential only after RAMP_UP_END);
+        - the cluster-size distribution for A;
+        - the price-gap distribution within A0 pairs;
+        - the share of pairs with identical redacted descriptions;
+        - the surplus: exact for A, bounds for the other tiers.
+        A separate, uncommitted query draws the task-3.1 sample.
+      status: "done"
+      complexity: "high"
+      estimated_hours: 2
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.4-duplicates"
+      commit_message: "docs(analysis): duplicate listings across ids"
+      acceptance_criteria:
+        - "Pair counts nest: A0 >= A±10 >= A±5 >= B >= C, and A0 >= A"
+        - "Tier A pair count agrees with the reviewed evidence (about 4,100 sale and 1,460 rent pairs) within the growth since 2026-10-31"
+        - "No pair with a null floor is counted in C"
+        - "The output is aggregates only"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/04_duplicates.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.3", "2.5", "2.6"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/04_duplicates.sql"
+      files_to_modify: []
+
+    - id: "2.5"
+      title: "Temporal"
+      description: |
+        analysis/silver-quality/05_temporal.sql covers:
+        - the sweep rhythm: revisit-interval percentiles and the days each sweep needs to walk
+          every area; these confirm RAMP_UP_END and CENSOR_START;
+        - listings per run and per day, and runs that contributed no observation;
+        - listings absent from a sweep that walked their area;
+        - for listings after the ramp-up: new listings per day, price-change frequency in
+          listing_detail, listings that vanish and return, and lifetimes with the censored end.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.5-temporal"
+      commit_message: "docs(analysis): temporal quality of Silver observations"
+      acceptance_criteria:
+        - "The run count equals landing_ingest's row count on the pinned snapshot"
+        - "The measured median revisit interval is stated, and the windows used agree with it or are adjusted with a reason"
+        - "Missed listings are either explained by walk coverage or listed as a question for the acquisition repository"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/05_temporal.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.3", "2.4", "2.6"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/05_temporal.sql"
+      files_to_modify: []
+
+    - id: "2.6"
+      title: "Redaction residue"
+      description: |
+        analysis/silver-quality/06_redaction.sql applies r1's exact patterns, copied from
+        src/silver/sql/redact.sql, and counts:
+        - phone digits by their surroundings: standalone, glued to a letter, glued 34 country
+          code, inside a longer number;
+        - e-mail and web-address patterns;
+        - honorific-plus-name forms that r1 misses.
+        A confirmed contact detail is reported to the user at once, without its value.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 0.75
+      depends_on: ["1.1"]
+      branch: "feature/silver-quality-exploration/2.6-redaction-residue"
+      commit_message: "docs(analysis): what redaction r1 leaves behind"
+      acceptance_criteria:
+        - "Run on the strings of tests/test_silver_redaction.py after r1, the expressions find nothing; a hand-written glued 34… string is found"
+        - "The counts per class are recorded; no matched text is committed"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "analysis/silver-quality/06_redaction.sql"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.3", "2.4", "2.5"]
+      reversible: true
+      rollback: "Delete the file"
+      files_to_create:
+        - "analysis/silver-quality/06_redaction.sql"
+      files_to_modify: []
+
+    - id: "3.1"
+      title: "Manual precision of duplicate strata (operator)"
+      description: |
+        Performed by the user, not the implementer.
+        - The implementer runs the uncommitted sampling query: 30 concurrent pairs from each
+          exclusive stratum (C; B without C; A±5 without B; A0 without A±10), ordered by a hash
+          of the pair ids.
+        - The implementer hands the sample to the user privately, outside the repository.
+        - The user judges each pair from the listing pages: same / different / unsure / page gone.
+        - Only the counts per stratum come back.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 2.5
+      depends_on: ["2.4"]
+      branch: "feature/silver-quality-exploration/3.1-duplicate-precision"
+      commit_message: "docs(analysis): precision of duplicate strata"
+      acceptance_criteria:
+        - "Counts for 4 strata x 30 pairs are recorded with the snapshot set they were drawn from"
+        - "No pair id or page link is committed"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "docs/data-quality/silver-quality-2026-11.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: ["2.1", "2.2", "2.3", "2.5", "2.6"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "docs/data-quality/silver-quality-2026-11.md"
+      files_to_modify: []
+
+    - id: "3.2"
+      title: "Findings document"
+      description: |
+        Complete docs/data-quality/silver-quality-2026-11.md with:
+        - the snapshot set;
+        - per dimension, the measured rates and their meaning for each candidate use case;
+        - the redaction result;
+        - proposed rules (duplicate stratum and thresholds by measured precision, outlier
+          bounds, completeness requirements per use case) and expected flag rates;
+        - a sketch of the follow-up feature: a labels table with a quality_version, flagged and
+          never filtered.
+        Update the plan's progress log and the success criteria.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["2.1", "2.2", "2.3", "2.5", "2.6", "3.1"]
+      branch: "feature/silver-quality-exploration/3.2-findings"
+      commit_message: "docs(data-quality): Silver quality findings and proposed rules"
+      acceptance_criteria:
+        - "Every number cites the query file that produced it and the snapshot set"
+        - "Each plausibility rule candidate has a decision: adopt with threshold, or drop"
+        - "The leak guard and workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/data-quality/silver-quality-2026-11.md"
+        - "dev/plans/FEATURE-005-silver-quality-exploration.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-005-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/data-quality/silver-quality-2026-11.md"
+        - "dev/plans/FEATURE-005-silver-quality-exploration.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-005-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/silver-quality-exploration/integration"
+    task_branch_strategy: |
+      Create the integration branch from main. Task 1.1 starts from the integration branch. Tasks
+      2.1-2.6 each start from the integration branch after 1.1 is merged; they touch disjoint
+      files and may run in any order. Task 3.1 starts after 2.4 is merged. Task 3.2 starts after
+      every other task is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, never rewriting
+      history, and run validation.final_commands there.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "docs(data-quality): Silver data-quality exploration"
+    final_pr_description: |
+      Implements FEATURE-005. See dev/reviews/REVIEW-FEATURE-005.md (approved) for context.
+
+  notes:
+    - "Exploration only: no file under src/, tests/ or infra/ changes. A quality rule becomes code only in the follow-up feature."
+    - "The public repository receives aggregates only. Review every committed SQL file's final SELECT and every number in the findings for row-level content before committing."
+    - "Review M6: one description likely holds a phone number with a glued 34 prefix that r1 misses. Fixing it is a separate r2 bugfix decided by the user, not part of this feature."
+    - "If an r2 bugfix lands before task 2.6, run 2.6 against r2 and say so in the findings."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
