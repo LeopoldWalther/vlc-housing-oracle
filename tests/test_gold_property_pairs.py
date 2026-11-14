@@ -75,5 +75,58 @@ class CertainPairTest(unittest.TestCase):
         )
 
 
+PAIR = [("syn", "syn-a", "syn", "syn-b")]
+
+
+class NotAPairTest(unittest.TestCase):
+    def assert_pairs(self, other: dict, expected: list, first: dict | None = None) -> None:
+        self.assertEqual(
+            pairs_of(first or listing(), listing(source_listing_id="syn-b") | other), expected
+        )
+
+    def test_a_different_key_attribute_never_pairs(self) -> None:
+        cases = {
+            "operation": "rent",
+            "municipality": "brisa",
+            "rooms": 4,
+            "bathrooms": 2,
+            "sqm_built": 81,
+        }
+        for column, value in cases.items():
+            with self.subTest(column=column):
+                self.assert_pairs({column: value}, [])
+
+    def test_a_missing_key_attribute_never_pairs(self) -> None:
+        for column in ("rooms", "bathrooms", "sqm_built"):
+            with self.subTest(column=column, sides="one"):
+                self.assert_pairs({column: None}, [])
+            with self.subTest(column=column, sides="both"):
+                self.assert_pairs({column: None}, [], first=listing(**{column: None}))
+
+    def test_exactly_five_percent_apart_pairs_and_one_euro_more_does_not(self) -> None:
+        first = listing(price_eur=100_000)
+        with self.subTest(price=105_000):
+            self.assert_pairs({"price_eur": 105_000}, PAIR, first=first)
+        with self.subTest(price=105_001):
+            self.assert_pairs({"price_eur": 105_001}, [], first=first)
+
+    def test_just_under_350_meters_pairs_and_just_over_does_not(self) -> None:
+        with self.subTest(degrees=0.003):
+            self.assert_pairs({"latitude": 39.473}, PAIR)
+        with self.subTest(degrees=0.0032):
+            self.assert_pairs({"latitude": 39.4732}, [])
+
+    def test_missing_coordinates_or_detail_record_never_pair(self) -> None:
+        for column in ("latitude", "longitude", "detail_observed_at"):
+            with self.subTest(column=column):
+                self.assert_pairs({column: None}, [])
+
+    def test_listings_of_different_sources_pair(self) -> None:
+        self.assertEqual(
+            pairs_of(listing(), listing(source="other", source_listing_id="syn-b")),
+            [("other", "syn-b", "syn", "syn-a")],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

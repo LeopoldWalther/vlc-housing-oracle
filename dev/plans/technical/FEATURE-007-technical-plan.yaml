@@ -131,7 +131,7 @@ technical_plan:
       title: "What is not a pair"
       description: |
         Pin every criterion on both sides of its threshold and every missing value.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["1.1"]
