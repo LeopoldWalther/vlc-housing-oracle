@@ -1,3 +1,12 @@
+-- Rule pg1: two listings with a detail record are certainly the same property when
+--   * operation, municipality, rooms, bathrooms and sqm_built are equal and none is null;
+--   * the higher price_eur is at most price_gap_max_percent above the lower, in integers;
+--   * both have coordinates less than distance_max_meters apart (haversine, sphere of 6,371 km);
+--   * floor: if either condition is 'new', both floors are present and equal; otherwise they are
+--     equal or at least one is missing. A null condition counts as not new.
+-- The source is not compared. Each pair comes once, smaller (source, source_listing_id) first.
+-- Evidence: docs/data-quality/silver-quality-2026-11.md (29 of 29 judgeable pairs were the same
+-- property; every relaxation tested was uncertain).
 CREATE OR REPLACE TEMP MACRO haversine_meters(lat_a, lon_a, lat_b, lon_b) AS
     2 * 6371000 * asin(sqrt(
         pow(sin(radians(lat_b - lat_a) / 2), 2)
@@ -23,4 +32,9 @@ WHERE a.detail_observed_at IS NOT NULL
         <= (100 + getvariable('price_gap_max_percent')) * least(a.price_eur, b.price_eur)::BIGINT
     AND haversine_meters(a.latitude, a.longitude, b.latitude, b.longitude)
         < getvariable('distance_max_meters')
+    AND CASE
+        WHEN coalesce(a.condition = 'new', false) OR coalesce(b.condition = 'new', false)
+            THEN coalesce(a.floor = b.floor, false)
+        ELSE a.floor IS NULL OR b.floor IS NULL OR a.floor = b.floor
+    END
 ORDER BY source_a, source_listing_id_a, source_b, source_listing_id_b;
