@@ -152,3 +152,50 @@ class NotEvidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def summary(rows: list[dict]) -> list[tuple]:
+    return sorted(
+        (row["event_date"], row["event_type"], row["area"], row["run_id"], row["last_seen_date"])
+        for row in rows
+    )
+
+
+class Reappearance(unittest.TestCase):
+    def test_the_first_sighting_after_a_disappearance_is_a_reappearance(self) -> None:
+        rows = events([walk(1), walk(3), walk(5)], [sighting(1), sighting(5, area="beta-sale")])
+
+        self.assertEqual(
+            summary(rows),
+            [
+                (day(3), "disappeared", AREA, run_id(3), day(1)),
+                (day(5), "reappeared", "beta-sale", run_id(5, "beta-sale"), day(1)),
+            ],
+        )
+
+    def test_two_gaps_give_four_events(self) -> None:
+        rows = events([walk(n) for n in (1, 3, 5, 7, 9)], [sighting(1), sighting(5), sighting(9)])
+
+        self.assertEqual(
+            [(row[0], row[1]) for row in summary(rows)],
+            [
+                (day(3), "disappeared"),
+                (day(5), "reappeared"),
+                (day(7), "disappeared"),
+                (day(9), "reappeared"),
+            ],
+        )
+
+    def test_a_gap_without_an_evidence_day_has_neither_event(self) -> None:
+        self.assertEqual(events([walk(1), walk(5)], [sighting(1), sighting(5)]), [])
+
+    def test_after_a_move_only_the_new_home_areas_walks_are_evidence(self) -> None:
+        sightings = [sighting(1), sighting(2, area="beta-sale")]
+
+        with self.subTest("old area"):
+            self.assertEqual(events([walk(3)], sightings), [])
+        with self.subTest("new area"):
+            self.assertEqual(
+                summary(events([walk(3, area="beta-sale")], sightings)),
+                [(day(3), "disappeared", "beta-sale", run_id(3, "beta-sale"), day(2))],
+            )
