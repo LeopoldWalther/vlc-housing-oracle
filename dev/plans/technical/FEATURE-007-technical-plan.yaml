@@ -276,7 +276,7 @@ technical_plan:
       description: |
         property_group_rows(): one row per listing with a detail record, with the group id, the
         group's size, the completeness flag and the provenance columns, as in the conventions.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["2.1"]
