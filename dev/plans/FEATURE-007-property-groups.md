@@ -220,7 +220,7 @@ data.
 
 ### Phase 3 — The Gold dataset
 
-- [ ] **3.1 Build from a Silver catalog.**
+- [x] **3.1 Build from a Silver catalog.**
     - RED: over a SQLite catalog backfilled from synthetic landing, the build expects a Parquet
         file whose `silver_listing_snapshot_id` is the catalog's current `listing` snapshot and
         whose columns and types are the contract above; a second build gives the same rows; a

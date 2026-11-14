@@ -327,7 +327,7 @@ technical_plan:
         catalog from the synthetic landing (as tests/test_silver_rebuild.py does) and writes into
         a temporary directory. At this point no synthetic listing can pair, so every listing is
         its own group.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["2.2"]
