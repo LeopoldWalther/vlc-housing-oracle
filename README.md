@@ -7,7 +7,7 @@ time-on-market, and market dynamics.
 
 > **Status:** Silver is implemented and follows landing v3: a landing commit queues a run in AWS,
 > and `python -m src.silver.rebuild --landing <dir-or-s3> --catalog <name>` processes the runs its
-> ingest log does not hold yet into five Iceberg tables ([runbook](docs/silver-rebuild.md)). Gold
+> ingest log does not hold yet into six Iceberg tables ([runbook](docs/silver-rebuild.md)). Gold
 > and models are not built yet.
 
 ## Architecture

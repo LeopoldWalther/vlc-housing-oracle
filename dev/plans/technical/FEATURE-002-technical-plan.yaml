@@ -401,7 +401,7 @@ technical_plan:
         event; the table is recomputed and replaced whole in every run, and why); add the line
         to the example output; mention the table in the incremental-mode description. README.md:
         the status sentence says six Iceberg tables.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
