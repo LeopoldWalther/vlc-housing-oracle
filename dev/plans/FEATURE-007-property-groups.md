@@ -243,7 +243,7 @@ data.
 
 ### Phase 4 — Documentation and the first real run
 
-- [ ] **4.1 Documentation.** `docs/gold-property-group.md` with the rule, its evidence by
+- [x] **4.1 Documentation.** `docs/gold-property-group.md` with the rule, its evidence by
     reference to the findings, the columns, the stability and privacy notes, and the command;
     the README's status and architecture lines. Validation: leak guard and workflow validator.
 - [ ] **4.2 Operator run.** After the merge and with explicit approval, because it writes the
