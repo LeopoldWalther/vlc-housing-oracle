@@ -182,7 +182,7 @@ technical_plan:
         Add the reappeared branch: when a gap that holds a disappeared event ends in a sighting,
         emit reappeared on that sighting's day with its area and run_id and the gap's
         last_seen_date.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.2"]
