@@ -1,0 +1,597 @@
+# Technical plan for FEATURE-007 — Property groups: one property behind several listings.
+# Emitted by the reviewer with the approval of 2026-11-14. It carries corrections M1 to M5,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-007"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-14"
+    version: "1.0"
+    total_tasks: 10
+    estimated_hours: "10"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3", "2.1", "2.2", "3.1", "3.2", "3.3", "4.1", "4.2"]
+    feature_plan: "dev/plans/FEATURE-007-property-groups.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-007.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - Everything lives in src/gold/property_group.py and src/gold/sql/pairs.sql. No base class,
+      registry or shared Gold module is introduced.
+    - A listing key is (source, source_listing_id). Only listings with detail_observed_at not
+      null take part.
+    - Pair rule pg1 (PROPERTY_GROUP_VERSION = "pg1"); two distinct listings pair when all hold:
+        equal operation, municipality, rooms, bathrooms, sqm_built, none of them null;
+        100 * higher price_eur <= (100 + PRICE_GAP_MAX_PERCENT) * lower price_eur, with
+          PRICE_GAP_MAX_PERCENT = 5, in integer arithmetic;
+        both have latitude and longitude, and the haversine distance on a sphere of radius
+          6,371,000 m is < DISTANCE_MAX_METERS = 350;
+        floor: if condition = 'new' on either side, both floors non-null and equal; otherwise
+          floors equal or at least one null. A null condition counts as not new.
+      The source is not compared. Each pair is returned once, smaller key first.
+    - Public functions:
+        duplicate_pairs(connection, listing) -> pyarrow.Table
+            columns source_a, source_listing_id_a, source_b, source_listing_id_b.
+        group_of(pairs) -> dict[ListingKey, ListingKey]
+            maps every listing that is in a pair to the smallest key of its connected component.
+        property_group_rows(listing, pairs, *, snapshot_id, built_at) -> pyarrow.Table
+            one row per listing with a detail record, columns in this order: source,
+            source_listing_id, property_group_id, group_size, group_is_complete,
+            property_group_version, silver_listing_snapshot_id, built_at; ordered by source,
+            source_listing_id. property_group_id = "<source>:<source_listing_id>" of the group's
+            smallest key. group_is_complete = the group's pair count equals n * (n - 1) / 2.
+        build(catalog, out, *, now) -> BuildReport (frozen dataclass of counts)
+            reads vlc_housing_silver.listing: takes current_snapshot().snapshot_id once and scans
+            with snapshot_id= that value and only the columns the rule needs; writes
+            <out>/listing_property_group/part-0.parquet through
+            pyarrow.fs.FileSystem.from_uri(out).
+        main(argv) -> int: exit 0 on success, 1 when the catalog has no listing table
+            (PropertyGroupError), 2 on usage.
+    - The namespace comes from src.silver.rebuild.NAMESPACE. Gold imports from Silver, never the
+      reverse.
+    - Tests use synthetic values only and coordinates near (39.47, -0.37): 0.003 degrees of
+      latitude is 333.6 m (pairs), 0.0032 degrees is 355.8 m (does not pair).
+    - Output of the command and of every note is counts only.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "A certain pair"
+      description: |
+        Create the package and the pair statement with the equality join, the price condition
+        and the distance condition (haversine macro); duplicate_pairs() registers the listing
+        table and runs it. The floor condition comes in 1.3; until then floors are ignored.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: []
+      branch: "feature/property-groups/1.1-certain-pair"
+      commit_message: "feat(gold): pair listings that are certainly the same property"
+      acceptance_criteria:
+        - "Two listings equal in operation, municipality, rooms, bathrooms and sqm_built, priced 2% apart and 100 m apart, give exactly one pair with the smaller key first"
+        - "A listing never pairs with itself and a pair is never returned twice"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_pairs.py"
+          change: |
+            New file with a helper that builds an Arrow table of listing rows from keyword
+            overrides on one default listing (only the columns the rule reads), and the two
+            cases of the acceptance criteria.
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.gold'"
+        green:
+          change: "src/gold/__init__.py, src/gold/sql/pairs.sql, duplicate_pairs() and the threshold constants in src/gold/property_group.py."
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+        refactor:
+          change: "Thresholds reach the statement as DuckDB variables set from the constants, not as literals in the SQL."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/gold/__init__.py"
+        - "src/gold/property_group.py"
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/gold/__init__.py"
+        - "src/gold/property_group.py"
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+      files_to_modify: []
+
+    - id: "1.2"
+      title: "What is not a pair"
+      description: |
+        Pin every criterion on both sides of its threshold and every missing value.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["1.1"]
+      branch: "feature/property-groups/1.2-not-a-pair"
+      commit_message: "feat(gold): missing values and near misses never pair"
+      acceptance_criteria:
+        - "No pair when operation, municipality, rooms, bathrooms or sqm_built differ"
+        - "No pair when rooms is null on one side or on both; the same for bathrooms and sqm_built"
+        - "Prices 100,000 and 105,000 pair; 100,000 and 105,001 do not"
+        - "0.003 degrees of latitude apart pairs; 0.0032 degrees does not"
+        - "No pair when either listing lacks latitude or longitude, or has no detail record"
+        - "Two listings of different sources that satisfy the rule pair"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_pairs.py"
+          change: "One subTest per case of the acceptance criteria."
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+          expected_failure: |
+            The detail-record case fails (1.1 does not filter on detail_observed_at). Cases that
+            SQL null semantics already satisfy pass and stay as guards; name in the commit body
+            which cases failed first.
+        green:
+          change: "The detail_observed_at filter and any condition a failing case needs."
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/gold/property_group.py"
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+
+    - id: "1.3"
+      title: "The floor"
+      description: |
+        Add the floor condition, which depends on condition = 'new' on either side.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.2"]
+      branch: "feature/property-groups/1.3-floor"
+      commit_message: "feat(gold): the floor separates units of a new build"
+      acceptance_criteria:
+        - "Resale: equal floors pair; one or both floors missing pair; different floors do not"
+        - "New build on either side: equal floors pair; a missing floor on either side does not; different floors do not"
+        - "A null condition behaves as resale"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_pairs.py"
+          change: "The floor matrix as subTests."
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+          expected_failure: "The cases expecting no pair fail: 1.2's statement ignores floors and returns a pair."
+        green:
+          change: "The CASE on condition and floor in pairs.sql."
+          command: "python -m unittest tests.test_gold_property_pairs -v"
+        refactor:
+          change: "Header comment of pairs.sql states the rule and cites the findings document."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+
+    - id: "2.1"
+      title: "Components"
+      description: |
+        group_of(pairs): union-find over listing keys; every key in a pair maps to the smallest
+        key of its connected component.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.3"]
+      branch: "feature/property-groups/2.1-components"
+      commit_message: "feat(gold): group paired listings into connected components"
+      acceptance_criteria:
+        - "Pairs A-B and B-C give one group of three, named by the smallest key"
+        - "Two separate pairs give two groups; no pairs give an empty mapping"
+        - "Any order of the pairs, and either order inside a pair, gives the same mapping"
+        - "Keys are compared as (source, source_listing_id), so the same id under two sources is two listings"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_groups.py"
+          change: "New file with the four cases."
+          command: "python -m unittest tests.test_gold_property_groups -v"
+          expected_failure: "ImportError: cannot import name 'group_of' from 'src.gold.property_group'"
+        green:
+          change: "group_of() with an iterative find and path compression."
+          command: "python -m unittest tests.test_gold_property_groups -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_groups.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "tests/test_gold_property_groups.py"
+      files_to_modify:
+        - "src/gold/property_group.py"
+
+    - id: "2.2"
+      title: "The dataset's rows"
+      description: |
+        property_group_rows(): one row per listing with a detail record, with the group id, the
+        group's size, the completeness flag and the provenance columns, as in the conventions.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["2.1"]
+      branch: "feature/property-groups/2.2-rows"
+      commit_message: "feat(gold): one row per listing with its property group"
+      acceptance_criteria:
+        - "Listings forming a pair, a chain of three and two singles give seven rows with the contract's columns, types and order"
+        - "group_size is 2, 3 and 1; group_is_complete is false only for the chain"
+        - "A single listing is its own complete group, named by its own key"
+        - "A listing without a detail record has no row"
+        - "Every row carries pg1, the given snapshot id and the given built_at in UTC"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_groups.py"
+          change: "A test class for property_group_rows with the cases above, comparing Arrow rows and the schema."
+          command: "python -m unittest tests.test_gold_property_groups -v"
+          expected_failure: "ImportError: cannot import name 'property_group_rows' from 'src.gold.property_group'"
+        green:
+          change: "property_group_rows() built on group_of() and the pair counts per group."
+          command: "python -m unittest tests.test_gold_property_groups -v"
+        refactor:
+          change: "The output schema as one module-level pyarrow.Schema used by the function and the test."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_groups.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_groups.py"
+
+    - id: "3.1"
+      title: "Build from a Silver catalog"
+      description: |
+        build(): read listing at one pinned snapshot, compute pairs and rows, write the Parquet
+        file through PyArrow's file system, return the counts. The test backfills a SQLite
+        catalog from the synthetic landing (as tests/test_silver_rebuild.py does) and writes into
+        a temporary directory. At this point no synthetic listing can pair, so every listing is
+        its own group.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["2.2"]
+      branch: "feature/property-groups/3.1-build"
+      commit_message: "feat(gold): build listing_property_group from a Silver snapshot"
+      acceptance_criteria:
+        - "The file <out>/listing_property_group/part-0.parquet exists with the contract's schema and one row per synthetic listing with a detail record"
+        - "silver_listing_snapshot_id on every row equals the listing table's snapshot id at build time, and a build after a further Silver commit records the newer id"
+        - "Two builds on the same snapshot with the same clock write equal rows"
+        - "A catalog without a listing table raises PropertyGroupError naming the table, and writes nothing"
+        - "BuildReport holds listings, groups, surplus, incomplete groups, groups above five listings and the largest group size"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_group_build.py"
+          change: "New file with the fixture and the four behavior cases."
+          command: "python -m unittest tests.test_gold_property_group_build -v"
+          expected_failure: "ImportError: cannot import name 'build' from 'src.gold.property_group'"
+        green:
+          change: "build(), BuildReport and PropertyGroupError."
+          command: "python -m unittest tests.test_gold_property_group_build -v"
+        refactor:
+          change: "The list of listing columns the rule reads is one constant used by the scan and the pair function."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_group_build.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "tests/test_gold_property_group_build.py"
+      files_to_modify:
+        - "src/gold/property_group.py"
+
+    - id: "3.2"
+      title: "A duplicate in the synthetic data"
+      description: |
+        _detail() in src/synthetic/landing.py accepts attribute overrides (keyword arguments
+        merged into the detail row). One new scenario: the same property under two listing ids
+        (equal attributes, coordinates 100 m apart, same floor, prices 2% apart) and a third
+        unit of a new build with the same attributes on another floor. Only this scenario sets
+        coordinates, floor and condition; register it in generate_landing_v3.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["3.1"]
+      branch: "feature/property-groups/3.2-synthetic-duplicate"
+      commit_message: "test(synthetic): one property under two listing ids, and a new-build unit"
+      acceptance_criteria:
+        - "The build over the synthetic landing yields exactly one group of two listings, complete, and every other listing alone, including the new-build unit"
+        - "The generated landing still conforms to the v3 contract and every existing test passes unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_group_build.py"
+          change: "A test expecting one group of size 2 named by the smaller of the scenario's two ids and no other group above size 1."
+          command: "python -m unittest tests.test_gold_property_group_build -v"
+          expected_failure: "AssertionError: the build returns no group of size 2, because no synthetic listing has coordinates."
+        green:
+          change: "The overrides parameter of _detail and the scenario."
+          command: "python -m unittest tests.test_gold_property_group_build tests.test_synthetic_landing -v"
+        refactor:
+          change: "The scenario function carries a comment naming what each of its three listings stands for."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "tests/test_gold_property_group_build.py"
+        - "tests/test_synthetic_landing.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "tests/test_gold_property_group_build.py"
+
+    - id: "3.3"
+      title: "The command"
+      description: |
+        main(): python -m src.gold.property_group --catalog <name> --out <dir-or-s3-location>.
+        Loads the catalog by name (PyIceberg configuration, as the Silver command), builds, and
+        prints the BuildReport as lines of counts.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["3.2"]
+      branch: "feature/property-groups/3.3-command"
+      commit_message: "feat(gold): a command that builds listing_property_group"
+      acceptance_criteria:
+        - "With a configured catalog and an output directory the command exits 0, writes the file and prints: listings, groups, surplus, incomplete groups, groups above five listings, largest group, and the Silver snapshot id"
+        - "No listing id appears in the output"
+        - "A missing argument exits 2; a catalog without a listing table exits 1 with a message naming the table"
+      tdd:
+        red:
+          test_file: "tests/test_gold_property_group_build.py"
+          change: "A test class that runs the module as a subprocess with PYICEBERG_CATALOG__* environment variables pointing at the SQLite fixture, as tests/test_silver_cli.py does."
+          command: "python -m unittest tests.test_gold_property_group_build -v"
+          expected_failure: "The subprocess exits non-zero: the module has no __main__ entry point and prints nothing."
+        green:
+          change: "main(), the report printer and the __main__ guard."
+          command: "python -m unittest tests.test_gold_property_group_build -v"
+        refactor:
+          change: "Module docstring shows the command, like src/silver/rebuild.py."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_group_build.py"
+      forbidden_files:
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/gold/property_group.py"
+        - "tests/test_gold_property_group_build.py"
+
+    - id: "4.1"
+      title: "Documentation"
+      description: |
+        docs/gold-property-group.md: what the dataset is; the rule pg1 with its thresholds and a
+        reference to the findings document for the evidence; the columns; that the id is stable
+        only within one build; that groups of more than two listings are not manually validated
+        and how group_size and group_is_complete let a consumer cap them; that roughly a third of
+        true duplicates is missed and one-room homes cannot pair; that the dataset is
+        listing-level and private, and only aggregates derived from it are published; the
+        command, the catalog configuration by reference to docs/silver-rebuild.md, and an example
+        on synthetic data. README.md: the status sentence and one line under Architecture.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["3.3"]
+      branch: "feature/property-groups/4.1-docs"
+      commit_message: "docs(gold): describe listing_property_group"
+      acceptance_criteria:
+        - "The document states the rule, the columns, the stability, validation and privacy limits, and the command"
+        - "The README names the first Gold dataset and says it is private"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/gold-property-group.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "docs/gold-property-group.md"
+      files_to_modify:
+        - "README.md"
+
+    - id: "4.2"
+      title: "First real build and implementation note (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR, and
+        only with the user's explicit approval of the first write under the Gold prefix
+        (proposed: <lake-bucket>/gold/v1).
+        1. From a checkout of main, with the Glue catalog configured through
+           PYICEBERG_CATALOG__SILVER__* environment variables and the operator's own
+           credentials, run the command with --catalog silver and --out set to the approved
+           location. Never write the location into a tracked file.
+        2. Take the printed counts. Compare them with the architect's evidence of 2026-11-14
+           (1,832 groups over 4,849 listings, 187 incomplete, largest 19): equal or larger,
+           because listings were added since.
+        3. In Athena or DuckDB, privately: confirm the file has one row per listing with a
+           detail record at the recorded snapshot, and that count(DISTINCT property_group_id)
+           equals the reported group count plus the single listings.
+        4. Write dev/plans/implementations/FEATURE-007-property-groups.md with the counts and
+           the snapshot's date; set the feature plan to complete, tick its success criteria, add
+           the progress-log entry and update the registry row.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.25
+      depends_on: ["4.1"]
+      branch: "feature/property-groups/4.2-first-build-record"
+      commit_message: "docs(plans): FEATURE-007 first build and group counts"
+      acceptance_criteria:
+        - "The command exits 0 and the file exists under the approved prefix"
+        - "The row count equals the listings with a detail record at the recorded snapshot"
+        - "The counts are recorded beside the architect's evidence, and any decrease is explained"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-007-property-groups.md"
+        - "dev/plans/FEATURE-007-property-groups.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-007-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Delete the object under the Gold prefix; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-007-property-groups.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-007-property-groups.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-007-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/property-groups/integration"
+    task_branch_strategy: |
+      Create the integration branch from main and commit the feature plan, the review, this file
+      and the FEATURE-007 registry row there first (only FEATURE-007's artifacts; FEATURE-002's
+      files in the same working tree belong to its own branch). Task 1.1 starts from the
+      integration branch; each later task up to 4.1 starts from the integration branch after its
+      predecessor is merged. The tasks share one module and three test files, so none runs in
+      parallel. Task 4.2 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, never rewriting
+      history, and run validation.final_commands there. The final PR goes from the integration
+      branch to main. Task 4.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(gold): property groups, the first Gold dataset"
+    final_pr_description: |
+      Implements FEATURE-007: listing_property_group maps every listing to a property group
+      under the certain duplicate rule pg1 from the FEATURE-005 findings. See
+      dev/reviews/REVIEW-FEATURE-007.md (approved). The dataset is built by hand and is private;
+      nothing in Silver or in the infrastructure changes.
+
+  notes:
+    - "Never print, log or commit a real listing id, coordinate or price; the command and task 4.2 output counts only."
+    - "The Gold location is the operator's private configuration: never in a tracked file, a test or a log committed to the repository."
+    - "Scan with the snapshot id taken once (review M2); do not rely on no Silver task running."
+    - "Write with pyarrow.fs.FileSystem.from_uri(out); do not add DuckDB extensions or a new dependency (review M3)."
+    - "FEATURE-002 changes src/silver/rebuild.py; this feature only imports NAMESPACE from it. README.md and dev/plans/README.md are shared; resolve the small conflict in whichever merges later."
+    - "The build stays manual until a consumer exists (review L1); the user may reverse that, which is a follow-up feature, not a change to this plan."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
