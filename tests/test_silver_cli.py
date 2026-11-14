@@ -108,6 +108,7 @@ class TestSilverCli(unittest.TestCase):
             with self.subTest(table=table):
                 self.assertRegex(completed.stdout, rf"(?m)^{table}: \d+ days, snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
 
     def test_a_second_run_finds_nothing_pending(self) -> None:
         self.run_cli("--landing", str(self.landing), "--catalog", "test")
@@ -126,6 +127,7 @@ class TestSilverCli(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn(f"pending: {self.runs}", completed.stdout)
+        self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
 
     def test_a_missing_landing_directory_is_a_usage_error(self) -> None:
         completed = self.run_cli("--landing", str(self.root / "absent"), "--catalog", "test")
