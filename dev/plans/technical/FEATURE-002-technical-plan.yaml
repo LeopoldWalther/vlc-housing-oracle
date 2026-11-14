@@ -1,0 +1,520 @@
+# Technical plan for FEATURE-002 — Listing events: disappeared and reappeared.
+# Emitted by the reviewer with the approval of 2026-11-14. It carries corrections M1, M2 and M3,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-002"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-14"
+    version: "1.0"
+    total_tasks: 8
+    estimated_hours: "8"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3", "1.4", "2.1", "2.2", "3.1", "3.2"]
+    feature_plan: "dev/plans/FEATURE-002-listing-event.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-002.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - The rule, per source (feature plan, Design):
+        sighting      = a row of Silver observation; an empty card counts as seen.
+        home area     = the area of the listing's latest sighting up to that day with
+                        is_empty_card false; none if there is no such sighting.
+        evidence day  = (area, observed_date) with at least one walk that is complete, has
+                        is_replay false (null is not false), and whose run_started_at and
+                        run_ended_at fall on the same UTC date.
+        gap           = from a sighting's day to the listing's next sighting, open-ended without one.
+        disappeared   = the first evidence day of the sighting's home area strictly inside the gap.
+        reappeared    = the next sighting's day, when the gap holds a disappeared event.
+    - Columns of listing_event, in this order: source, source_listing_id, event_type, event_date,
+      area, run_id, last_seen_date, transformation_version.
+        disappeared: area = home area; run_id = the complete live run of that area on event_date
+                     with the earliest run_started_at.
+        reappeared:  area and run_id = those of the sighting that ends the gap.
+        last_seen_date = the sighting that opens the gap, for both types.
+      Rows are ordered by source, source_listing_id, event_date, event_type.
+    - The statement lives in src/silver/sql/listing_event.sql and reads the temporary tables
+      silver_walk and silver_observation, like the existing statements.
+    - listing_events(connection, walk, observation) -> pyarrow.Table in src/silver/rebuild.py is
+      the one public entry point: it prepares the session (UTC, variables), replaces silver_walk
+      and silver_observation with the given Arrow tables, and runs the statement. It needs only
+      these columns: walk (source, area, observed_date, run_id, run_started_at, run_ended_at,
+      complete, is_replay); observation (source, source_listing_id, observed_date, area,
+      is_empty_card, run_id).
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - Tests use synthetic values only (source "syn", invented areas) and compare results as Arrow
+      rows (to_arrow_table().to_pylist()), never through fetchall (review L2).
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "A disappearance"
+      description: |
+        Create src/silver/sql/listing_event.sql and listing_events() in src/silver/rebuild.py.
+        The statement finds, for each sighting, the first evidence day of its area inside the
+        gap to the next sighting and returns one disappeared row. At this stage the area is the
+        sighting's own area and an evidence day is any complete, non-replay walk; 1.2 adds the
+        remaining conditions. Do not add listing_event to SILVER_TABLES (review M1).
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: []
+      branch: "feature/listing-event/1.1-disappeared"
+      commit_message: "feat(silver): a listing disappears at the first complete walk that misses it"
+      acceptance_criteria:
+        - "A listing seen in an area on day 1 and missed by a complete live walk of that area on day 3 yields exactly one row: disappeared, event_date day 3, that area, the walk's run_id, last_seen_date day 1, transformation_version silver-v1"
+        - "A listing seen on day 1 and day 3 with no walk between yields no row"
+        - "The existing suite is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_event.py"
+          change: |
+            New file with small helpers that build Arrow tables of walk and observation rows
+            (only the columns named in the conventions) and a test class calling
+            listing_events(duckdb.connect(), walk, observation). Add the two cases of the
+            acceptance criteria.
+          command: "python -m unittest tests.test_silver_listing_event -v"
+          expected_failure: "ImportError: cannot import name 'listing_events' from 'src.silver.rebuild'"
+        green:
+          change: |
+            listing_event.sql with the sighting, evidence and gap expressions and the disappeared
+            SELECT; listing_events() as described in the conventions.
+          command: "python -m unittest tests.test_silver_listing_event -v"
+        refactor:
+          change: "Name the common table expressions sighting, evidence and gap; header comment states the rule."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_event.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_event.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "1.2"
+      title: "What is not evidence"
+      description: |
+        Add the evidence filters and the home-area rule: is_replay must be false, null complete
+        or is_replay never counts, the run must start and end on one UTC date, the walk must be
+        of the home area and strictly after the sighting; the home area is the area of the
+        latest non-empty sighting; an empty-card sighting still closes a gap.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["1.1"]
+      branch: "feature/listing-event/1.2-not-evidence"
+      commit_message: "feat(silver): only complete live walks of a listing's own area are evidence"
+      acceptance_criteria:
+        - "No event from: an incomplete walk; a replay; a walk with null complete and is_replay; a walk of another area; a walk on the sighting's day or earlier; a walk whose run ends on the next UTC date"
+        - "A listing only ever seen as an empty card yields no event"
+        - "A listing seen as a real card in area A, then only as an empty card in area B, is judged by A's walks"
+        - "An empty-card sighting between two walks closes the gap: no event dated after it for the earlier sighting"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_event.py"
+          change: "One test per case of the acceptance criteria, each a subTest or its own method."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+          expected_failure: |
+            The replay, null, midnight, empty-card-only and home-area cases fail: the 1.1 statement
+            returns a disappeared row where none is expected. The incomplete-walk, other-area and
+            same-day cases may already pass and stay as guards.
+        green:
+          change: "The WHERE of the evidence expression and the home_area window in listing_event.sql."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+        refactor:
+          change: "None expected beyond keeping each condition on its own line with the reason in the header comment."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+
+    - id: "1.3"
+      title: "A return, and more than one gap"
+      description: |
+        Add the reappeared branch: when a gap that holds a disappeared event ends in a sighting,
+        emit reappeared on that sighting's day with its area and run_id and the gap's
+        last_seen_date.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.2"]
+      branch: "feature/listing-event/1.3-reappeared"
+      commit_message: "feat(silver): a listing reappears at its first sighting after a disappearance"
+      acceptance_criteria:
+        - "Seen day 1, missed by a complete walk day 3, seen day 5: disappeared (day 3) and reappeared (day 5, the day-5 sighting's area and run_id, last_seen_date day 1)"
+        - "Two such gaps yield four events"
+        - "A gap without an evidence day yields neither event, although the listing was seen again"
+        - "After the latest real card moved from area A to area B, a complete walk of A is no evidence and one of B is"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_event.py"
+          change: "The four cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+          expected_failure: "The cases expecting a reappeared row fail: the statement returns only disappeared rows."
+        green:
+          change: "UNION ALL the reappeared SELECT from the gap expression, with lead() of area and run_id."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+
+    - id: "1.4"
+      title: "One event per gap, deterministically"
+      description: |
+        Fix the remaining degrees of freedom: only the first evidence day of a gap makes an
+        event; with several complete live walks of the area on that day the run with the earliest
+        run_started_at is named; rows are ordered; empty inputs give an empty table with the
+        contract's columns and Arrow types (string, string, string, date32, string, string,
+        date32, string).
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.3"]
+      branch: "feature/listing-event/1.4-deterministic"
+      commit_message: "feat(silver): listing events are unique per gap and ordered"
+      acceptance_criteria:
+        - "Three evidence days inside one gap yield a single disappeared on the first"
+        - "Two complete live walks of the area on the evidence day: run_id is the run that started earlier, whatever the run_id strings' order"
+        - "Rows are ordered by source, source_listing_id, event_date, event_type, and (source, source_listing_id, event_type, event_date) is unique"
+        - "Empty walk and observation tables give zero rows with the eight columns and their types"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_event.py"
+          change: "The four cases; the tie-break case uses an import-style run id that sorts after timestamps but started earlier."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+          expected_failure: |
+            At least the tie-break case fails if 1.1 chose the run by its id, and the ordering
+            case fails without the final ORDER BY. Cases that already pass stay as guards; if all
+            four pass, record that in the commit body and add no production code.
+        green:
+          change: "arg_min(run_id, run_started_at) in the evidence expression and the final ORDER BY."
+          command: "python -m unittest tests.test_silver_listing_event -v"
+        refactor:
+          change: "Assert the column list once in a constant shared by the tests of this file."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_event.sql"
+        - "tests/test_silver_listing_event.py"
+
+    - id: "2.1"
+      title: "The table is written in both modes"
+      description: |
+        Append "listing_event" to SILVER_TABLES, so build_tables computes it over every run (the
+        oracle of the equality tests). In process_landing, after listing and listing_text are
+        written and before record_ingested, in both modes: scan Silver's walk (the eight columns
+        of the conventions) and observation (the six columns) at their current snapshots from the
+        catalog, call listing_events, and overwrite the table with write_silver_tables using the
+        run's snapshot properties; add its snapshot id to ProcessResult.snapshot_ids. The events
+        function must run after _compute_listings, which replaces the temporary table
+        silver_observation with a subset. With nothing pending, nothing is written.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 2.0
+      depends_on: ["1.4"]
+      branch: "feature/listing-event/2.1-pipeline"
+      commit_message: "feat(silver): maintain listing_event in every run"
+      acceptance_criteria:
+        - "A backfill writes listing_event with at least one row on the synthetic landing, equal to the rule over every run"
+        - "One commit at a time, three at a time and all at once give the same listing_event rows as a backfill"
+        - "A run interrupted before the ingest log and repeated gives the same rows"
+        - "A late run that adds a sighting inside a gap removes the disappeared event; the table equals a backfill"
+        - "Tables that predate the feature: after some commits, listing_event is dropped; processing the rest recreates it equal to a backfill, and every other table's schema is unchanged"
+        - "Nothing pending writes no snapshot to listing_event"
+        - "The table's snapshot summary carries the same properties as the other tables"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            Append "listing_event" to SILVER_TABLES in src/silver/rebuild.py first: this is the
+            RED change for the existing equality and backfill tests. Add to
+            tests/test_silver_listing_event.py a class on a SQLite catalog with hand-written
+            landing (write_landing_v3) for the retraction case, and to
+            tests/test_silver_incremental.py the pre-feature-tables case.
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_event -v"
+          expected_failure: |
+            tests/test_silver_rebuild.py::test_every_table_is_committed_and_its_snapshot_holds_its_rows
+            fails on the set comparison (listing_event missing from snapshot_ids);
+            tests/test_silver_incremental.py fails with NoSuchTableError for
+            vlc_housing_silver.listing_event; the new retraction and pre-feature cases fail the
+            same way.
+        green:
+          change: "The catalog scan, the listing_events call and the overwrite in process_landing, as described."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_event tests.test_silver_listing_incremental -v"
+        refactor:
+          change: "One private function for 'events from the catalog'; no duplicated column lists between the scan and the conventions."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+        - "tests/test_silver_listing_event.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/observation.sql"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit; drop the table if a run already created it"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_listing_event.py"
+
+    - id: "2.2"
+      title: "The command reports the table"
+      description: |
+        _report prints "listing_event: snapshot <id>" after the listing_text line.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.25
+      depends_on: ["2.1"]
+      branch: "feature/listing-event/2.2-report"
+      commit_message: "feat(silver): report the listing_event snapshot"
+      acceptance_criteria:
+        - "An incremental and a backfill run print a line matching ^listing_event: snapshot \\d+$"
+        - "Every existing output line is unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          change: "assertRegex for the new line next to the existing listing line in the incremental and backfill tests."
+          command: "python -m unittest tests.test_silver_cli -v"
+          expected_failure: "AssertionError: Regex didn't match '(?m)^listing_event: snapshot \\d+$'"
+        green:
+          change: "Add listing_event to the names _report prints after the day tables."
+          command: "python -m unittest tests.test_silver_cli -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "3.1"
+      title: "Runbook and README"
+      description: |
+        docs/silver-rebuild.md: add listing_event to "The tables" (one row per event; the rule in
+        two sentences; event_date is when the absence was noticed, the listing left between
+        last_seen_date and event_date; no event means nobody looked; a late run can retract an
+        event; the table is recomputed and replaced whole in every run, and why); add the line
+        to the example output; mention the table in the incremental-mode description. README.md:
+        the status sentence says six Iceberg tables.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.2"]
+      branch: "feature/listing-event/3.1-docs"
+      commit_message: "docs(silver): describe listing_event"
+      acceptance_criteria:
+        - "The runbook states the rule, the interval meaning of event_date, the censoring, the retraction and the whole-table replacement"
+        - "The README counts six tables"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+
+    - id: "3.2"
+      title: "First real run and implementation note (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR.
+        1. Wait for GitHub Actions to publish the image of the merge commit (tag = SHA).
+        2. In the operator's local, gitignored infra/silver/silver.auto.tfvars set silver_image
+           to that tag; terraform apply in infra/silver. Only a new task definition revision and
+           the consumer's reference to it may change. Never stage, print or commit the file.
+        3. Let the next landing commit or the 05:30 UTC catch-up start a task. No backfill.
+           From the task log take the listing_event snapshot id and the task's duration, and
+           compare the duration with the tasks before the change.
+        4. In Athena, privately and as counts only: count listing_event rows per event_type at
+           that snapshot, and count the same rule written in Athena SQL over the walk and
+           observation snapshots of the same run (window functions with IGNORE NULLS, the
+           evidence filter with date(run_ended_at) = date(run_started_at), the first evidence day
+           per gap). The two pairs of counts must be equal. No row is returned or saved.
+        5. Write dev/plans/implementations/FEATURE-002-listing-event.md with the counts, the
+           snapshot date and the durations; set the feature plan to complete, tick its success
+           criteria, add the progress-log entry and update the registry row.
+        Every AWS action needs explicit user approval in chat.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["3.1"]
+      branch: "feature/listing-event/3.2-first-run-record"
+      commit_message: "docs(plans): FEATURE-002 first run and event counts"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0 and prints a listing_event snapshot"
+        - "Counts per event_type in listing_event equal the Athena implementation of the rule on the same snapshots"
+        - "The task duration before and after is recorded"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-002-listing-event.md"
+        - "dev/plans/FEATURE-002-listing-event.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-002-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous tag and apply; drop vlc_housing_silver.listing_event; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-002-listing-event.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-002-listing-event.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-002-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/listing-event/integration"
+    task_branch_strategy: |
+      Create the integration branch from main and commit the feature plan, the review, this file
+      and the FEATURE-002 registry row there first (only FEATURE-002's artifacts; FEATURE-007's
+      files in the same working tree belong to its own branch). Task 1.1 starts from the
+      integration branch; each later task of phases 1 to 3.1 starts from the integration branch
+      after its predecessor is merged. The tasks share listing_event.sql, rebuild.py and one test
+      file, so none runs in parallel. Task 3.2 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 3.1, never rewriting history, and
+      run validation.final_commands there. The final PR goes from the integration branch to
+      main. Task 3.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): listing events, disappeared and reappeared"
+    final_pr_description: |
+      Implements FEATURE-002: Silver gains listing_event, recomputed whole from walk and
+      observation in every run. See dev/reviews/REVIEW-FEATURE-002.md (approved). The table is
+      created by the first run after deployment; no backfill and no infrastructure change.
+
+  notes:
+    - "Never print, log or commit a real listing id, area or run id; task 3.2 outputs counts only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image in silver.auto.tfvars changes, by the operator, in task 3.2."
+    - "_compute_listings replaces the temporary table silver_observation with the affected listings' rows; compute the events after it, from a fresh catalog scan."
+    - "If the rule changes later, bump transformation_version and run the backfill in the same operator session (review L3)."
+    - "The day is the unit and there is no confirmation threshold (review L1); the user may reverse either before task 1.1 starts, which returns the feature to the Architect."
+    - "dev/plans/README.md is also changed by FEATURE-007; resolve the one-line conflict in whichever merges later."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
