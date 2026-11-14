@@ -212,7 +212,7 @@ data.
         smallest member; two separate pairs expect two groups; no pairs expect no groups; the
         result does not depend on the order of the pairs.
     - GREEN: union-find.
-- [ ] **2.2 The dataset's rows.**
+- [x] **2.2 The dataset's rows.**
     - RED: listings forming a pair, a chain of three and two singles expect one row per listing
         with a detail record, the right `group_size`, `group_is_complete` false only for the
         chain, a singleton as its own complete group, and the provenance columns.
