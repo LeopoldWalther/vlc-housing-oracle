@@ -426,7 +426,7 @@ technical_plan:
         main(): python -m src.gold.property_group --catalog <name> --out <dir-or-s3-location>.
         Loads the catalog by name (PyIceberg configuration, as the Silver command), builds, and
         prints the BuildReport as lines of counts.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.2"]

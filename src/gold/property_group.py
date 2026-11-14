@@ -1,7 +1,15 @@
-"""Property groups: listings that are certainly the same property, under rule pg1."""
+"""Property groups: listings that are certainly the same property, under rule pg1.
 
+Builds the Gold dataset listing_property_group from the current snapshot of Silver's listing. Run
+by the operator from the repository root::
+
+    python -m src.gold.property_group --catalog <name> --out <dir or s3://bucket/gold/v1>
+"""
+
+import argparse
+import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +18,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow.fs import FileSystem
-from pyiceberg.catalog import Catalog
+from pyiceberg.catalog import Catalog, load_catalog
 
 from src.silver.rebuild import NAMESPACE
 
@@ -204,3 +212,47 @@ def _report(rows: pa.Table, snapshot_id: int) -> BuildReport:
         largest_group=max(sizes.values(), default=0),
         snapshot_id=snapshot_id,
     )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Build once; exit 0 on success, 1 when the catalog has no listing table, 2 on usage."""
+    parser = argparse.ArgumentParser(
+        prog="python -m src.gold.property_group",
+        description="Build the Gold dataset listing_property_group from Silver's listing.",
+    )
+    parser.add_argument(
+        "--catalog",
+        required=True,
+        help="PyIceberg catalog name, configured in ~/.pyiceberg.yaml or PYICEBERG_CATALOG__* "
+        "environment variables",
+    )
+    parser.add_argument(
+        "--out",
+        required=True,
+        help="the versioned Gold prefix: a directory or s3://bucket/gold/v1",
+    )
+    arguments = parser.parse_args(argv)
+    try:
+        report = build(
+            load_catalog(arguments.catalog), arguments.out, now=lambda: datetime.now(UTC)
+        )
+    except PropertyGroupError as error:
+        print(f"Property group build refused: {error}", file=sys.stderr)
+        return 1
+    _print_report(report)
+    return 0
+
+
+def _print_report(report: BuildReport) -> None:
+    # Counts only: the dataset is listing-level and private.
+    print(f"listings: {report.listings}")
+    print(f"groups: {report.groups}")
+    print(f"surplus: {report.surplus}")
+    print(f"incomplete groups: {report.incomplete_groups}")
+    print(f"groups above five listings: {report.groups_above_five}")
+    print(f"largest group: {report.largest_group}")
+    print(f"silver listing snapshot: {report.snapshot_id}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
