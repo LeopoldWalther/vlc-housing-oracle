@@ -1,5 +1,8 @@
 """The operator builds listing_property_group from one pinned snapshot of Silver's listing."""
 
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -21,17 +24,18 @@ from src.synthetic.landing import generate_landing_v3
 SILVER_AT = datetime(2026, 10, 8, 6, 0, tzinfo=UTC)
 BUILT_AT = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 DATASET = Path("listing_property_group") / "part-0.parquet"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SilverFixture(unittest.TestCase):
     """A SQLite catalog backfilled from the synthetic landing, and an empty output directory."""
 
     def setUp(self) -> None:
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root = root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.landing = root / "landing" / "v3"
         self.landing.mkdir(parents=True)
         generate_landing_v3(self.landing, seed=1)
-        warehouse = root / "warehouse"
+        self.warehouse = warehouse = root / "warehouse"
         warehouse.mkdir()
         self.catalog = SqlCatalog(
             "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
@@ -147,6 +151,64 @@ class BuildTest(SilverFixture):
 
         with self.assertRaisesRegex(PropertyGroupError, f"{NAMESPACE}.listing"):
             build(empty, str(self.out), now=lambda: BUILT_AT)
+        self.assertFalse((self.out / DATASET).exists())
+
+
+class CommandTest(SilverFixture):
+    def run_command(self, *arguments: str, warehouse: Path | None = None):
+        warehouse = warehouse or self.warehouse
+        # PYICEBERG_HOME keeps a developer's own ~/.pyiceberg.yaml out of the test.
+        environment = {
+            name: value for name, value in os.environ.items() if not name.startswith("PYICEBERG_")
+        } | {
+            "PYICEBERG_HOME": str(self.root),
+            "PYICEBERG_CATALOG__TEST__URI": f"sqlite:///{warehouse}/catalog.db",
+            "PYICEBERG_CATALOG__TEST__WAREHOUSE": f"file://{warehouse}",
+        }
+        return subprocess.run(
+            [sys.executable, "-m", "src.gold.property_group", *arguments],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_the_command_writes_the_file_and_prints_counts_only(self) -> None:
+        completed = self.run_command("--catalog", "test", "--out", str(self.out))
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertTrue((self.out / DATASET).exists())
+        listings = len(self.listings_with_detail())
+        self.assertEqual(
+            completed.stdout.splitlines(),
+            [
+                f"listings: {listings}",
+                "groups: 1",
+                "surplus: 1",
+                "incomplete groups: 0",
+                "groups above five listings: 0",
+                "largest group: 2",
+                f"silver listing snapshot: {self.listing_snapshot_id()}",
+            ],
+        )
+        for listing_id in ("syn-twin-a", "syn-twin-b", "syn-"):
+            self.assertNotIn(listing_id, completed.stdout + completed.stderr)
+
+    def test_a_missing_argument_is_a_usage_error(self) -> None:
+        completed = self.run_command("--catalog", "test")
+
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("--out", completed.stderr)
+
+    def test_a_catalog_without_a_listing_table_exits_1_naming_the_table(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+
+        completed = self.run_command("--catalog", "test", "--out", str(self.out), warehouse=empty)
+
+        self.assertEqual(1, completed.returncode)
+        self.assertIn(f"{NAMESPACE}.listing", completed.stderr)
         self.assertFalse((self.out / DATASET).exists())
 
 

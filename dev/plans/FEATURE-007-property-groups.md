@@ -234,7 +234,7 @@ data.
         which shows the scenario disturbs no other case.
     - GREEN: `_detail` in `src/synthetic/landing.py` accepts attribute overrides, and the
         scenario uses them for coordinates, floor and condition.
-- [ ] **3.3 The command.**
+- [x] **3.3 The command.**
     - RED: `python -m src.gold.property_group --catalog <name> --out <dir>` expects exit 0, the
         file, and a report of counts only (listings, groups, surplus, incomplete groups, groups
         of more than five listings, largest group); a missing argument expects exit 2 and a
