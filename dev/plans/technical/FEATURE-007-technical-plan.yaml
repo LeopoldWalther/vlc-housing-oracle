@@ -79,7 +79,7 @@ technical_plan:
         Create the package and the pair statement with the equality join, the price condition
         and the distance condition (haversine macro); duplicate_pairs() registers the listing
         table and runs it. The floor condition comes in 1.3; until then floors are ignored.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: []
