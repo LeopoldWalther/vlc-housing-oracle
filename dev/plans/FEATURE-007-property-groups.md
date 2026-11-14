@@ -1,6 +1,6 @@
 # FEATURE-007 — Property groups: one property behind several listings
 
-**Status:** 🔵 Planned · **Effort:** M (~10h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~10h) · **Priority:** High
 **Branch root:** `feature/property-groups` · **Created:** 2026-11-14 · **Updated:** 2026-11-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-007.md`).
@@ -186,7 +186,7 @@ data.
 
 ### Phase 1 — The pair rule
 
-- [ ] **1.1 A certain pair.**
+- [x] **1.1 A certain pair.**
     - RED: two listings equal in every key, priced 2% apart, 100 m apart, same floor, expect one
         pair. Fails because `src/gold/` does not exist.
     - GREEN: `pairs.sql` with the equality join, the price and distance conditions, and a
