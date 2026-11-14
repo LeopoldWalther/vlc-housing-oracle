@@ -35,7 +35,14 @@ TRANSFORMATION_VERSION = "silver-v1"
 REDACTION_VERSION = "r2"
 
 # In dependency order: a statement may read the silver_<table> of any table listed before it.
-SILVER_TABLES = ("walk", "observation", "listing_detail", "listing", "listing_text")
+SILVER_TABLES = (
+    "walk",
+    "observation",
+    "listing_detail",
+    "listing",
+    "listing_text",
+    "listing_event",
+)
 
 # Intermediate views shared by several Silver statements, created before them.
 SHARED_VIEWS = ("chosen_detail",)
@@ -46,6 +53,26 @@ LISTING_KEY = ["source", "source_listing_id"]
 
 # The tables replaced per day; listing and listing_text are recomputed per affected listing.
 DAY_TABLES = ("walk", "observation", "listing_detail")
+
+# The columns of Silver walk and observation that the listing_event rule reads.
+EVENT_WALK_COLUMNS = (
+    "source",
+    "area",
+    "observed_date",
+    "run_id",
+    "run_started_at",
+    "run_ended_at",
+    "complete",
+    "is_replay",
+)
+EVENT_OBSERVATION_COLUMNS = (
+    "source",
+    "source_listing_id",
+    "observed_date",
+    "area",
+    "is_empty_card",
+    "run_id",
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +172,15 @@ def process_landing(
             run_started=run_started,
             properties=properties,
         )
+    # A run can retract or add events of any listing, so the table is recomputed and replaced
+    # whole; it reads Silver after this run's days and listings are written.
+    snapshot_ids |= write_silver_tables(
+        catalog,
+        NAMESPACE,
+        {"listing_event": _events_from_silver(connection, catalog)},
+        properties,
+        allow_new_columns=backfill,
+    )
     record_ingested(catalog, NAMESPACE, todo, now(), TRANSFORMATION_VERSION)
     return ProcessResult(
         pending=len(todo),
@@ -291,15 +327,39 @@ def _compute_listings(
     return listing, listing_text
 
 
+def _events_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:
+    """``listing_event`` over Silver's current walk and observation."""
+    walk, observation = (
+        _silver_columns(connection, catalog, name, columns)
+        for name, columns in (
+            ("walk", EVENT_WALK_COLUMNS),
+            ("observation", EVENT_OBSERVATION_COLUMNS),
+        )
+    )
+    return listing_events(connection, walk, observation)
+
+
+def _silver_columns(
+    connection: duckdb.DuckDBPyConnection, catalog: Catalog, name: str, columns: Sequence[str]
+) -> pa.Table:
+    identifier = f"{NAMESPACE}.{name}"
+    if catalog.table_exists(identifier):
+        return catalog.load_table(identifier).scan(selected_fields=tuple(columns)).to_arrow()
+    # A day table appears with its first day; until then this run's own result, empty as well,
+    # gives the columns their types.
+    return connection.sql(
+        f"SELECT {', '.join(columns)} FROM silver_{name} LIMIT 0"
+    ).to_arrow_table()
+
+
 def listing_events(
     connection: duckdb.DuckDBPyConnection, walk: pa.Table, observation: pa.Table
 ) -> pa.Table:
     """The ``listing_event`` rows of every listing, from Silver's whole walk and observation.
 
-    The given tables replace the temporary tables ``silver_walk`` and ``silver_observation``.
-    Walk needs source, area, observed_date, run_id, run_started_at, run_ended_at, complete and
-    is_replay; observation needs source, source_listing_id, observed_date, area, is_empty_card
-    and run_id.
+    The given tables, which need ``EVENT_WALK_COLUMNS`` and ``EVENT_OBSERVATION_COLUMNS``, replace
+    the temporary tables ``silver_walk`` and ``silver_observation``: call this after every other
+    statement of the session.
     """
     _prepare(connection)
     for name, rows in (("walk", walk), ("observation", observation)):
