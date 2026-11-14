@@ -232,7 +232,7 @@ technical_plan:
         run_started_at is named; rows are ordered; empty inputs give an empty table with the
         contract's columns and Arrow types (string, string, string, date32, string, string,
         date32, string).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.3"]
