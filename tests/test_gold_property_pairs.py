@@ -128,5 +128,35 @@ class NotAPairTest(unittest.TestCase):
         )
 
 
+class FloorTest(unittest.TestCase):
+    # (condition a, floor a, condition b, floor b, pairs?)
+    CASES = [
+        ("good", "2", "good", "2", True),
+        ("good", None, "good", "2", True),
+        ("good", None, "good", None, True),
+        ("good", "2", "good", "3", False),
+        ("new", "2", "new", "2", True),
+        ("new", "2", "good", "2", True),
+        ("new", None, "new", "2", False),
+        ("good", "2", "new", None, False),
+        ("new", None, "new", None, False),
+        ("new", "2", "new", "3", False),
+        ("good", "2", "new", "3", False),
+        (None, None, None, "2", True),
+        (None, "2", None, "3", False),
+    ]
+
+    def test_the_floor_matrix(self) -> None:
+        for condition_a, floor_a, condition_b, floor_b, pairs in self.CASES:
+            with self.subTest(a=(condition_a, floor_a), b=(condition_b, floor_b)):
+                self.assertEqual(
+                    pairs_of(
+                        listing(condition=condition_a, floor=floor_a),
+                        listing(source_listing_id="syn-b", condition=condition_b, floor=floor_b),
+                    ),
+                    PAIR if pairs else [],
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

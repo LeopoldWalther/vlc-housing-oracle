@@ -183,7 +183,7 @@ technical_plan:
       title: "The floor"
       description: |
         Add the floor condition, which depends on condition = 'new' on either side.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.2"]

@@ -198,7 +198,7 @@ data.
     - a price gap just above 5%, with exactly 5% expected to pair;
     - a distance just above 350 m, with just below expected to pair;
     - missing coordinates; a listing without a detail record.
-- [ ] **1.3 The floor.**
+- [x] **1.3 The floor.**
     - RED: resale with equal floors, and with one floor missing, expect a pair; resale with
         different floors expects none. With a new build on either side: equal floors expect a
         pair; a missing or a different floor expects none. A missing `condition` behaves as
