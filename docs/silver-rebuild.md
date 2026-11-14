@@ -20,7 +20,7 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_event` from Silver's whole `walk` and `observation` and replaces it, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -37,6 +37,7 @@ listing_detail: 2 days, snapshot <snapshot-id>
 affected listings: 431
 listing: snapshot <snapshot-id>
 listing_text: snapshot <snapshot-id>
+listing_event: snapshot <snapshot-id>
 ```
 
 | Exit code | Meaning |
@@ -103,7 +104,29 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_detail` | `observed_date` | detail record | The history a listing recompute reads, so a night never rereads all of landing. No free text. |
 | `listing` | — | listing | Attributes of the newest detail record (`detail_observed_at`) plus `first_seen`, `last_seen`, `days_observed` over all observations. A listing seen only in search results has null attributes. |
 | `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r2'` (Spanish phone numbers, with or without `+34`, `0034` or a `34` glued to the number → `[phone]`; honorific plus a capitalised or all-capitals word → `[name]`). r2 added the glued `34` and the capitals to r1. A pattern change is `r3`, never an edit of `r2`. |
+| `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
+
+### `listing_event`
+
+A listing disappeared on the first day after a sighting on which a complete live walk of its home
+area did not see it; it reappeared on the day it was seen again after such a day. Evidence is a
+walk with `complete` true, `is_replay` false (null is not false) and a start and end on the same
+UTC date; the home area is the area of the listing's latest real card, since an empty card only
+names a search that happened to show it.
+
+- `event_date` of a `disappeared` row is when the absence was noticed, not when the listing left:
+  it left somewhere between `last_seen_date` and `event_date`. `run_id` names the run of that day
+  that started first.
+- No event is not proof of presence. Without an evidence day nobody looked, and the listing may
+  have left and come back unnoticed.
+- Disappearance is observed absence, never a sale or a rental.
+- A late run can retract an event: a sighting inside a gap closes it, and the next run removes
+  the `disappeared` row that gap held.
+- The table is recomputed from Silver's whole `walk` and `observation` and replaced whole in every
+  run that processes something, in both modes, because any run can add or retract events of any
+  listing. Reading those two tables whole takes a few seconds; the table is the one exception to
+  replacing day partitions.
 
 ## Running in AWS
 
