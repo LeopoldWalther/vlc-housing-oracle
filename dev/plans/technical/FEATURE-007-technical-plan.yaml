@@ -229,7 +229,7 @@ technical_plan:
       description: |
         group_of(pairs): union-find over listing keys; every key in a pair maps to the smallest
         key of its connected component.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.3"]

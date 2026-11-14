@@ -207,7 +207,7 @@ data.
 
 ### Phase 2 — Groups
 
-- [ ] **2.1 Components.**
+- [x] **2.1 Components.**
     - RED: for pairs A–B and B–C the function expects one group of three whose id names the
         smallest member; two separate pairs expect two groups; no pairs expect no groups; the
         result does not depend on the order of the pairs.
