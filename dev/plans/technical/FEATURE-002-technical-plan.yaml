@@ -131,7 +131,7 @@ technical_plan:
         or is_replay never counts, the run must start and end on one UTC date, the walk must be
         of the home area and strictly after the sighting; the home area is the area of the
         latest non-empty sighting; an empty-card sighting still closes a gap.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.1"]
