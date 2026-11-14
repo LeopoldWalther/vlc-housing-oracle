@@ -74,7 +74,7 @@ technical_plan:
         gap to the next sighting and returns one disappeared row. At this stage the area is the
         sighting's own area and an evidence day is any complete, non-replay walk; 1.2 adds the
         remaining conditions. Do not add listing_event to SILVER_TABLES (review M1).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: []

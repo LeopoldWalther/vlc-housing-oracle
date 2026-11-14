@@ -291,6 +291,24 @@ def _compute_listings(
     return listing, listing_text
 
 
+def listing_events(
+    connection: duckdb.DuckDBPyConnection, walk: pa.Table, observation: pa.Table
+) -> pa.Table:
+    """The ``listing_event`` rows of every listing, from Silver's whole walk and observation.
+
+    The given tables replace the temporary tables ``silver_walk`` and ``silver_observation``.
+    Walk needs source, area, observed_date, run_id, run_started_at, run_ended_at, complete and
+    is_replay; observation needs source, source_listing_id, observed_date, area, is_empty_card
+    and run_id.
+    """
+    _prepare(connection)
+    for name, rows in (("walk", walk), ("observation", observation)):
+        connection.register(f"event_{name}", rows)
+        connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS FROM event_{name}")
+        connection.unregister(f"event_{name}")
+    return connection.sql(_statement("listing_event")).to_arrow_table()
+
+
 def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     # DuckDB exports instants in the session zone and Iceberg accepts only UTC.
     connection.execute("SET TimeZone = 'UTC'")
