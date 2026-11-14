@@ -1,12 +1,16 @@
 """listing_event: a listing disappears at the first complete live walk of its area that misses it."""
 
+import tempfile
 import unittest
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+from pyiceberg.catalog.sql import SqlCatalog
 
-from src.silver.rebuild import listing_events
+from src.silver.rebuild import NAMESPACE, listing_events, local_commits, process_landing
+from src.synthetic.landing import write_landing_v3
 
 AREA = "alba-sale"
 
@@ -250,3 +254,124 @@ class Determinism(unittest.TestCase):
 
         self.assertEqual(table.num_rows, 0)
         self.assertEqual(table.schema, EVENT_SCHEMA)
+
+
+def landing_walk(run: str, n: int) -> dict:
+    started = datetime.strptime(run, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    return {
+        "source": "syn",
+        "run_id": run,
+        "area": AREA,
+        "run_started_at": started,
+        "run_ended_at": started + timedelta(minutes=20),
+        "observed_date": day(n),
+        "complete": True,
+        "is_replay": False,
+        "is_replay_source": "recorded",
+    }
+
+
+def landing_card(run: str, n: int, listing_id: str) -> dict:
+    observed_at = datetime.strptime(run, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC) + timedelta(
+        minutes=5
+    )
+    return {
+        "source": "syn",
+        "run_id": run,
+        "area": AREA,
+        "operation": "sale",
+        "municipality": "alba",
+        "source_listing_id": listing_id,
+        "observed_at": observed_at,
+        "observed_date": day(n),
+        "ingested_at": observed_at,
+        "price_eur": 250_000,
+        "is_empty_card": False,
+    }
+
+
+def landing_detail(run: str, n: int, listing_id: str) -> dict[str, list[dict]]:
+    card = landing_card(run, n, listing_id)
+    key = {
+        name: card[name]
+        for name in (
+            "source",
+            "run_id",
+            "area",
+            "source_listing_id",
+            "observed_at",
+            "observed_date",
+            "ingested_at",
+        )
+    }
+    return {
+        "listing_detail": [
+            key | {"operation": "sale", "municipality": "alba", "price_eur": 250_000}
+        ],
+        "listing_text": [key | {"title": "Piso", "description": "Luminoso.", "features": []}],
+    }
+
+
+class TestListingEventInTheRun(unittest.TestCase):
+    """The table on a catalog, maintained by process_landing from hand-written landing."""
+
+    DAY_1, DAY_3, LATE_DAY_3 = "20261001T060000Z", "20261003T060000Z", "20261003T120000Z"
+
+    def setUp(self) -> None:
+        self.landing = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write_landing_v3(
+            self.landing,
+            {
+                "walk": [landing_walk(self.DAY_1, 1), landing_walk(self.DAY_3, 3)],
+                "observation": [
+                    landing_card(self.DAY_1, 1, "L1"),
+                    landing_card(self.DAY_1, 1, "L2"),
+                ],
+            }
+            | landing_detail(self.DAY_1, 1, "L1"),
+        )
+
+    def catalog(self) -> SqlCatalog:
+        warehouse = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        return SqlCatalog(
+            "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
+        )
+
+    def process(self, catalog: SqlCatalog, mode: str = "incremental") -> None:
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        process_landing(
+            connection,
+            catalog,
+            landing=str(self.landing),
+            mode=mode,
+            list_commits=lambda: local_commits(self.landing),
+            now=lambda: datetime(2026, 10, 20, tzinfo=UTC),
+        )
+
+    def events(self, catalog: SqlCatalog) -> list[tuple]:
+        rows = catalog.load_table(f"{NAMESPACE}.listing_event").scan().to_arrow().to_pylist()
+        return sorted(
+            (row["source_listing_id"], row["event_type"], row["event_date"]) for row in rows
+        )
+
+    def test_a_late_run_that_sees_the_listing_retracts_its_disappearance(self) -> None:
+        catalog = self.catalog()
+        self.process(catalog)
+        self.assertEqual(
+            [("L1", "disappeared", day(3)), ("L2", "disappeared", day(3))], self.events(catalog)
+        )
+
+        write_landing_v3(
+            self.landing,
+            {
+                "walk": [landing_walk(self.LATE_DAY_3, 3)],
+                "observation": [landing_card(self.LATE_DAY_3, 3, "L1")],
+            },
+        )
+        self.process(catalog)
+
+        backfilled = self.catalog()
+        self.process(backfilled, mode="backfill")
+        self.assertEqual([("L2", "disappeared", day(3))], self.events(catalog))
+        self.assertEqual(self.events(backfilled), self.events(catalog))

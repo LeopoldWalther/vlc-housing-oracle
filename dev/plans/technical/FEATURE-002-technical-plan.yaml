@@ -288,7 +288,7 @@ technical_plan:
         run's snapshot properties; add its snapshot id to ProcessResult.snapshot_ids. The events
         function must run after _compute_listings, which replaces the temporary table
         silver_observation with a subset. With nothing pending, nothing is written.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 2.0
       depends_on: ["1.4"]
