@@ -526,7 +526,7 @@ technical_plan:
         4. Write dev/plans/implementations/FEATURE-007-property-groups.md with the counts and
            the snapshot's date; set the feature plan to complete, tick its success criteria, add
            the progress-log entry and update the registry row.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.25
       depends_on: ["4.1"]
