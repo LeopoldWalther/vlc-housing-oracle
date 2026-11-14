@@ -1,6 +1,6 @@
 # FEATURE-002 — Listing events: disappeared and reappeared
 
-**Status:** 🔵 Planned · **Effort:** M (~8h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~8h) · **Priority:** High
 **Branch root:** `feature/listing-event` · **Created:** 2026-11-14 · **Updated:** 2026-11-14
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-002.md`).
