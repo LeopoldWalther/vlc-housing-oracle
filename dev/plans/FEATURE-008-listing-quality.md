@@ -1,6 +1,6 @@
 # FEATURE-008 — Listing quality flags: implausible values and misplaced coordinates
 
-**Status:** 🟡 In progress · **Effort:** M (~7h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** M (~7h) · **Priority:** High
 **Branch root:** `feature/listing-quality` · **Created:** 2026-11-15 · **Updated:** 2026-11-15
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-008.md`).
@@ -308,7 +308,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
     - The findings: a pointer from "Proposed rules" to the implemented rules, and a note that
         the labels live in Silver, not in Gold as its sketch proposed.
     - Validation: leak guard and workflow validator.
-- [ ] **3.2 Deployment and first real run.**
+- [x] **3.2 Deployment and first real run.**
     - Only after the merge and with explicit approval, because it changes the task definition:
         set the image tag, plan, apply.
     - After the first run that processes something:
@@ -384,17 +384,17 @@ $0/month — no resources added or changed beyond a new task-definition revision
 
 ## Success criteria
 
-- [ ] Every flag is tested above, at and below its threshold, and with a missing input.
-- [ ] Every listing with a detail record has exactly one row, and no flag is null.
-- [ ] Any sequence of landing commits and a backfill give the same `listing_quality` rows.
-- [ ] A catalog that predates the feature gains the table without a backfill, and no other
+- [x] Every flag is tested above, at and below its threshold, and with a missing input.
+- [x] Every listing with a detail record has exactly one row, and no flag is null.
+- [x] Any sequence of landing commits and a backfill give the same `listing_quality` rows.
+- [x] A catalog that predates the feature gains the table without a backfill, and no other
     table's schema changes.
-- [ ] The first real run's counts per flag equal the same rule in Athena, and the task duration
+- [x] The first real run's counts per flag equal the same rule in Athena, and the task duration
     is recorded.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak and workflow checks pass
-- [ ] The table's contract and reading are documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak and workflow checks pass
+- [x] The table's contract and reading are documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -429,3 +429,6 @@ $0/month — no resources added or changed beyond a new task-definition revision
 - **2026-11-15** — Replanned as a Silver table after the user's layer decision: entity-level
     validation belongs to Silver, Gold is for use-case-specific datasets. The move of
     `listing_property_group` follows as its own feature.
+- **2026-11-15** — Task 3.2: the image of merge commit `6e16b65` was deployed, and the first run
+    created the table. All flags equal the same rules in Athena on 23,159 listings; see the
+    [implementation note](implementations/FEATURE-008-listing-quality.md). Feature complete.
