@@ -450,7 +450,7 @@ technical_plan:
            snapshot date and the durations; set the feature plan to complete, tick its success
            criteria, add the progress-log entry and update the registry row.
         Every AWS action needs explicit user approval in chat.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["3.1"]
