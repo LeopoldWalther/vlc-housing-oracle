@@ -20,7 +20,7 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_event` from Silver's whole `walk` and `observation` and replaces it, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` from Silver's whole `listing` and `listing_event` from Silver's whole `walk` and `observation` and replaces both, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -37,6 +37,7 @@ listing_detail: 2 days, snapshot <snapshot-id>
 affected listings: 431
 listing: snapshot <snapshot-id>
 listing_text: snapshot <snapshot-id>
+listing_quality: snapshot <snapshot-id>
 listing_event: snapshot <snapshot-id>
 ```
 
@@ -104,8 +105,53 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_detail` | `observed_date` | detail record | The history a listing recompute reads, so a night never rereads all of landing. No free text. |
 | `listing` | — | listing | Attributes of the newest detail record (`detail_observed_at`) plus `first_seen`, `last_seen`, `days_observed` over all observations. A listing seen only in search results has null attributes. |
 | `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r2'` (Spanish phone numbers, with or without `+34`, `0034` or a `34` glued to the number → `[phone]`; honorific plus a capitalised or all-capitals word → `[name]`). r2 added the glued `34` and the capitals to r1. A pattern change is `r3`, never an edit of `r2`. |
+| `listing_quality` | — | listing with a detail record | Twelve boolean flags, one per plausibility and location rule. A flag is an inferred label and changes no value of `listing`. See below. |
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
+
+### `listing_quality`
+
+One flag per rule of the data-quality findings
+([`docs/data-quality/silver-quality-2026-11.md`](data-quality/silver-quality-2026-11.md)). The
+thresholds are `QUALITY_THRESHOLDS` in `src/silver/rebuild.py`; the rules are
+`src/silver/sql/listing_quality.sql`. Join the table to `listing` on `source` and
+`source_listing_id`.
+
+| Flag | True when |
+| --- | --- |
+| `price_out_of_bounds` | `price_eur` below 10,000 or above 20,000,000 (sale); below 100 or above 30,000 (rent) |
+| `sqm_built_below_min` | `sqm_built` below 10 |
+| `sqm_built_above_max` | `sqm_built` above 2,000 |
+| `price_per_sqm_below_min` | `price_eur` below 300 × `sqm_built` (sale) or 2 × `sqm_built` (rent) |
+| `price_per_sqm_above_max` | `price_eur` above 15,000 × `sqm_built` (sale) or 60 × `sqm_built` (rent) |
+| `sqm_usable_above_built` | `sqm_usable` above `sqm_built` |
+| `rooms_above_max` | `rooms` above 12 |
+| `bathrooms_above_rooms` | `bathrooms` above `rooms` + 2 |
+| `year_built_out_of_range` | `year_built` below 1500, or above the UTC year of `detail_observed_at` plus one |
+| `price_drop_above_max` | `price_eur` below half of `prev_price_eur` |
+| `coordinates_missing` | `latitude` or `longitude` is missing |
+| `far_from_municipality` | more than 10 km from the municipality's centre |
+
+- **A flag means "check", not "wrong".** In the findings, 17 of the 22 sale listings with a low
+  price per m² were houses with large plots. No row of any table is changed or dropped; a
+  consumer decides which flags exclude a listing from its analysis.
+- **True only on evidence.** A flag is true when its inputs are present and break the rule. A
+  missing input gives false, never null. Missing coordinates have a flag of their own; a missing
+  `rooms` is not a break.
+- **Operations.** `rent` listings are judged at the rent thresholds, every other operation at
+  the sale thresholds.
+- **The year bound follows the observation,** not the clock of the run, so a backfill gives the
+  same flags.
+- **The centre** of a municipality is the median latitude and median longitude of its listings
+  with a detail record and coordinates, both operations together; the distance is the haversine
+  distance on a sphere of 6,371 km. The centre moves with the listings, and in a municipality
+  with very few listings it can move noticeably.
+- **Comparisons are exact.** Prices and areas are integers; price per m² is compared as a
+  product, never as a division, and as a 64-bit product, so an absurd value is flagged and
+  cannot fail the run.
+- The table is recomputed from Silver's whole `listing` and replaced whole in every run that
+  processes something, in both modes: one listing can move a centre and with it the flag of any
+  other listing of its municipality.
 
 ### `listing_event`
 
