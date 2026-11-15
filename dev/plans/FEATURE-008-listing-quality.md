@@ -258,7 +258,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
 
         The test fails because the column does not exist.
     - GREEN: the year condition.
-- [ ] **1.3 Location flags.**
+- [x] **1.3 Location flags.**
     - RED:
         - a listing without coordinates expects `coordinates_missing` true and
             `far_from_municipality` false;

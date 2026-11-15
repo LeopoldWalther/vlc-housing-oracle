@@ -1,5 +1,5 @@
--- One row per listing with a detail record: one flag per plausibility rule of the data-quality
--- findings (docs/data-quality/silver-quality-2026-11.md). A flag is an inferred label beside the
+-- One row per listing with a detail record: one flag per plausibility and location rule of the
+-- data-quality findings (docs/data-quality/silver-quality-2026-11.md). A flag is an inferred label beside the
 -- facts of silver_listing and means "check", never "wrong".
 --
 -- A flag is true only when its inputs are present and break the rule; a missing input gives
@@ -7,6 +7,9 @@
 -- Rent listings are judged at the rent thresholds, every other operation at the sale thresholds.
 -- Price per m² is compared as price against threshold × area, never as a division, and every
 -- product is a BIGINT: a 32-bit product overflows on exactly the values these rules exist for.
+-- A municipality's centre is the median latitude and median longitude of its listings with a
+-- detail record and coordinates, so a few misplaced listings do not move it. A listing without
+-- coordinates or without a municipality has no distance and is not far.
 WITH detail AS (
     SELECT
         *,
@@ -30,10 +33,19 @@ judged AS (
             getvariable('sale_price_per_sqm_max')
         ) AS price_per_sqm_max
     FROM detail
+),
+centre AS (
+    SELECT
+        municipality,
+        median(latitude) AS latitude,
+        median(longitude) AS longitude
+    FROM detail
+    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+    GROUP BY municipality
 )
 SELECT
-    source,
-    source_listing_id,
+    judged.source,
+    judged.source_listing_id,
     coalesce(price_eur < price_min OR price_eur > price_max, false) AS price_out_of_bounds,
     coalesce(sqm_built < getvariable('sqm_built_min'), false) AS sqm_built_below_min,
     coalesce(sqm_built > getvariable('sqm_built_max'), false) AS sqm_built_above_max,
@@ -54,6 +66,17 @@ SELECT
     ) AS year_built_out_of_range,
     -- A drop of more than half: twice the price is still below the previous price.
     coalesce(2 * price_eur::BIGINT < prev_price_eur, false) AS price_drop_above_max,
+    judged.latitude IS NULL OR judged.longitude IS NULL AS coordinates_missing,
+    -- Haversine distance on a sphere of 6,371 km.
+    coalesce(
+        2 * 6371 * asin(sqrt(
+            pow(sin(radians(centre.latitude - judged.latitude) / 2), 2)
+            + cos(radians(judged.latitude)) * cos(radians(centre.latitude))
+            * pow(sin(radians(centre.longitude - judged.longitude) / 2), 2)
+        )) > getvariable('municipality_distance_max_km'),
+        false
+    ) AS far_from_municipality,
     getvariable('transformation_version') AS transformation_version
 FROM judged
-ORDER BY source, source_listing_id
+LEFT JOIN centre ON centre.municipality = judged.municipality
+ORDER BY judged.source, judged.source_listing_id

@@ -29,6 +29,32 @@ LISTING_SCHEMA = pa.schema(
     ]
 )
 
+FLAGS = (
+    "price_out_of_bounds",
+    "sqm_built_below_min",
+    "sqm_built_above_max",
+    "price_per_sqm_below_min",
+    "price_per_sqm_above_max",
+    "sqm_usable_above_built",
+    "rooms_above_max",
+    "bathrooms_above_rooms",
+    "year_built_out_of_range",
+    "price_drop_above_max",
+    "coordinates_missing",
+    "far_from_municipality",
+)
+
+QUALITY_SCHEMA = pa.schema(
+    [
+        ("source", pa.string()),
+        ("source_listing_id", pa.string()),
+        *((name, pa.bool_()) for name in FLAGS),
+        ("transformation_version", pa.string()),
+    ]
+)
+
+KM_PER_DEGREE_OF_LATITUDE = 111.195
+
 # A plausible flat for sale: no rule is broken.
 PLAUSIBLE = {
     "source": "syn",
@@ -55,6 +81,10 @@ def listing(*rows: dict) -> pa.Table:
 def quality(*rows: dict) -> list[dict]:
     with duckdb.connect() as connection:
         return listing_quality(connection, listing(*rows)).to_pylist()
+
+
+def north_of(latitude: float, km: float) -> float:
+    return latitude + km / KM_PER_DEGREE_OF_LATITUDE
 
 
 def flag(name: str, **values: object) -> object:
@@ -84,9 +114,14 @@ class RowsTest(unittest.TestCase):
     def test_a_plausible_listing_has_no_flag(self) -> None:
         (row,) = quality({})
 
-        flags = {name: value for name, value in row.items() if isinstance(value, bool)}
-        self.assertEqual(10, len(flags))
-        self.assertEqual(set(), {name for name, value in flags.items() if value})
+        self.assertEqual(set(), {name for name in FLAGS if row[name]})
+
+    def test_the_columns_and_types_are_the_contract_also_without_listings(self) -> None:
+        with duckdb.connect() as connection:
+            rows = listing_quality(connection, listing())
+
+        self.assertEqual(0, rows.num_rows)
+        self.assertEqual(QUALITY_SCHEMA, rows.schema)
 
 
 class PlausibilityFlagTest(unittest.TestCase):
@@ -201,6 +236,84 @@ class YearFlagTest(unittest.TestCase):
 
     def test_a_missing_year_is_not_out_of_range(self) -> None:
         self.assertIs(flag("year_built_out_of_range", year_built=None), False)
+
+
+class LocationFlagTest(unittest.TestCase):
+    # Three listings within 100 m of each other; the municipality's centre lies among them.
+    CLOSE = (
+        {"source_listing_id": "syn-a", "latitude": 39.47},
+        {"source_listing_id": "syn-b", "latitude": 39.4705},
+        {"source_listing_id": "syn-c", "latitude": 39.4709},
+    )
+
+    def far_flags(self, *rows: dict) -> dict[str, bool]:
+        return {row["source_listing_id"]: row["far_from_municipality"] for row in quality(*rows)}
+
+    def test_a_listing_without_a_coordinate_is_missing_them_and_not_far(self) -> None:
+        for values in ({"latitude": None}, {"longitude": None}):
+            with self.subTest(**values):
+                rows = quality(*self.CLOSE, {"source_listing_id": "syn-x"} | values)
+                row = rows[-1]
+
+                self.assertIs(row["coordinates_missing"], True)
+                self.assertIs(row["far_from_municipality"], False)
+
+    def test_a_listing_with_coordinates_is_not_missing_them(self) -> None:
+        self.assertIs(flag("coordinates_missing"), False)
+
+    def test_only_the_listing_beyond_ten_km_is_far_and_it_does_not_move_the_centre(self) -> None:
+        far = {"source_listing_id": "syn-far", "latitude": north_of(39.47, 11)}
+
+        self.assertEqual(
+            {"syn-a": False, "syn-b": False, "syn-c": False, "syn-far": True},
+            self.far_flags(*self.CLOSE, far),
+        )
+
+    def test_a_listing_nine_km_away_is_not_far(self) -> None:
+        near = {"source_listing_id": "syn-near", "latitude": north_of(39.47, 9)}
+
+        self.assertIs(self.far_flags(*self.CLOSE, near)["syn-near"], False)
+
+    def test_every_municipality_has_its_own_centre(self) -> None:
+        # 50 km north, another municipality: its own listings are its centre.
+        other = [
+            {
+                "source_listing_id": f"syn-o{n}",
+                "municipality": "brisa",
+                "latitude": north_of(39.47, 50) + n * 0.0004,
+            }
+            for n in range(3)
+        ]
+
+        self.assertEqual(
+            set(), {key for key, far in self.far_flags(*self.CLOSE, *other).items() if far}
+        )
+
+    def test_a_listing_without_a_detail_record_does_not_count_towards_the_centre(self) -> None:
+        # With the three undetailed listings the centre would move north and syn-a would be far.
+        undetailed = [
+            {
+                "source_listing_id": f"syn-u{n}",
+                "detail_observed_at": None,
+                "latitude": north_of(39.47, 30),
+            }
+            for n in range(3)
+        ]
+        north = {"source_listing_id": "syn-north", "latitude": north_of(39.47, 30)}
+
+        self.assertEqual(
+            {"syn-a": False, "syn-b": False, "syn-c": False, "syn-north": True},
+            self.far_flags(*self.CLOSE, north, *undetailed),
+        )
+
+    def test_a_listing_without_a_municipality_is_not_far(self) -> None:
+        lost = {
+            "source_listing_id": "syn-lost",
+            "municipality": None,
+            "latitude": north_of(39.47, 30),
+        }
+
+        self.assertIs(self.far_flags(*self.CLOSE, lost)["syn-lost"], False)
 
 
 if __name__ == "__main__":
