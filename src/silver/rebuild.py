@@ -44,6 +44,41 @@ SILVER_TABLES = (
     "listing_event",
 )
 
+# The columns of Silver listing that the listing_quality rules read.
+QUALITY_LISTING_COLUMNS = (
+    "source",
+    "source_listing_id",
+    "detail_observed_at",
+    "operation",
+    "municipality",
+    "price_eur",
+    "prev_price_eur",
+    "sqm_built",
+    "sqm_usable",
+    "rooms",
+    "bathrooms",
+    "year_built",
+    "latitude",
+    "longitude",
+)
+
+# Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
+# Prices are EUR for sale and EUR per month for rent; areas are m².
+QUALITY_THRESHOLDS = {
+    "sale_price_min": 10_000,
+    "sale_price_max": 20_000_000,
+    "rent_price_min": 100,
+    "rent_price_max": 30_000,
+    "sqm_built_min": 10,
+    "sqm_built_max": 2_000,
+    "sale_price_per_sqm_min": 300,
+    "sale_price_per_sqm_max": 15_000,
+    "rent_price_per_sqm_min": 2,
+    "rent_price_per_sqm_max": 60,
+    "rooms_max": 12,
+    "bathrooms_over_rooms_max": 2,
+}
+
 # Intermediate views shared by several Silver statements, created before them.
 SHARED_VIEWS = ("chosen_detail",)
 
@@ -369,11 +404,26 @@ def listing_events(
     return connection.sql(_statement("listing_event")).to_arrow_table()
 
 
+def listing_quality(connection: duckdb.DuckDBPyConnection, listing: pa.Table) -> pa.Table:
+    """The ``listing_quality`` rows of every listing with a detail record.
+
+    The given table, which needs ``QUALITY_LISTING_COLUMNS``, replaces the temporary table
+    ``silver_listing``: call this after every other statement of the session that reads it.
+    """
+    _prepare(connection)
+    connection.register("quality_listing", listing)
+    connection.execute("CREATE OR REPLACE TEMP TABLE silver_listing AS FROM quality_listing")
+    connection.unregister("quality_listing")
+    return connection.sql(_statement("listing_quality")).to_arrow_table()
+
+
 def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     # DuckDB exports instants in the session zone and Iceberg accepts only UTC.
     connection.execute("SET TimeZone = 'UTC'")
     connection.execute(f"SET VARIABLE transformation_version = '{TRANSFORMATION_VERSION}'")
     connection.execute(f"SET VARIABLE redaction_version = '{REDACTION_VERSION}'")
+    for name, value in QUALITY_THRESHOLDS.items():
+        connection.execute(f"SET VARIABLE {name} = {value}::BIGINT")
     connection.execute(_statement("redact"))
 
 

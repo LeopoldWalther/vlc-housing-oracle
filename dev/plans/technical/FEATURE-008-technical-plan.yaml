@@ -86,7 +86,7 @@ technical_plan:
         nine plausibility flags other than year_built_out_of_range, and transformation_version.
         Do not add the year flag or the location flags yet, and do not add listing_quality to
         SILVER_TABLES (review M1).
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: []
