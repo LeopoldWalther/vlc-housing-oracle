@@ -1,0 +1,545 @@
+# Technical plan for FEATURE-008 — Listing quality flags.
+# Emitted by the reviewer with the approval of 2026-11-15. It carries corrections M1, M2 and M3,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-008"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-15"
+    version: "1.0"
+    total_tasks: 8
+    estimated_hours: "7"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "3.1", "3.2"]
+    feature_plan: "dev/plans/FEATURE-008-listing-quality.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-008.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - The table listing_quality: one row per listing of Silver's listing with a detail record
+      (detail_observed_at IS NOT NULL), ordered by source, source_listing_id. Columns, in order:
+        source, source_listing_id,
+        price_out_of_bounds, sqm_built_below_min, sqm_built_above_max,
+        price_per_sqm_below_min, price_per_sqm_above_max, sqm_usable_above_built,
+        rooms_above_max, bathrooms_above_rooms, year_built_out_of_range, price_drop_above_max,
+        coordinates_missing, far_from_municipality,
+        transformation_version.
+      Arrow types: string, string, twelve bool, string.
+    - Rules (thresholds as named constants in src/silver/rebuild.py, passed to the statement as
+      DuckDB variables like transformation_version). operation 'rent' uses the rent thresholds,
+      every other operation the sale thresholds.
+        price_out_of_bounds       price_eur < 10000 or > 20000000 (sale); < 100 or > 30000 (rent)
+        sqm_built_below_min       sqm_built < 10
+        sqm_built_above_max       sqm_built > 2000
+        price_per_sqm_below_min   sqm_built > 0 and price_eur < 300 * sqm_built (sale), 2 * (rent)
+        price_per_sqm_above_max   sqm_built > 0 and price_eur > 15000 * sqm_built (sale), 60 * (rent)
+        sqm_usable_above_built    sqm_usable > sqm_built
+        rooms_above_max           rooms > 12
+        bathrooms_above_rooms     bathrooms > rooms + 2
+        year_built_out_of_range   year_built < 1500 or year_built > year(detail_observed_at) + 1 (UTC)
+        price_drop_above_max      2 * price_eur < prev_price_eur
+        coordinates_missing       latitude IS NULL or longitude IS NULL
+        far_from_municipality     haversine distance (sphere of 6,371 km) to the municipality
+                                  centre > 10 km; the centre is median(latitude), median(longitude)
+                                  over the municipality's listings with a detail record and both
+                                  coordinates, all operations together.
+    - Every flag is coalesce(<condition>, false): a missing input gives false, never null.
+    - Every product is computed as BIGINT (cast one operand), never as INTEGER (review M2).
+    - The statement lives in src/silver/sql/listing_quality.sql, reads the temporary table
+      silver_listing and defines its own haversine macro; Silver does not import from src/gold.
+    - listing_quality(connection, listing) -> pyarrow.Table in src/silver/rebuild.py is the one
+      public entry point: it prepares the session (UTC, variables), replaces the temporary table
+      silver_listing with the given Arrow table, and runs the statement. It needs only the
+      columns of a constant QUALITY_LISTING_COLUMNS: source, source_listing_id,
+      detail_observed_at, operation, municipality, price_eur, prev_price_eur, sqm_built,
+      sqm_usable, rooms, bathrooms, year_built, latitude, longitude.
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - Tests use synthetic values only (source "syn", invented municipalities) and compare results
+      as Arrow rows (to_arrow_table().to_pylist()), never through fetchall.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "The rows and nine plausibility flags"
+      description: |
+        Create src/silver/sql/listing_quality.sql and listing_quality() in src/silver/rebuild.py.
+        The statement returns one row per listing with a detail record, ordered by key, with the
+        nine plausibility flags other than year_built_out_of_range, and transformation_version.
+        Do not add the year flag or the location flags yet, and do not add listing_quality to
+        SILVER_TABLES (review M1).
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: []
+      branch: "feature/listing-quality/1.1-plausibility-flags"
+      commit_message: "feat(silver): flag implausible prices, areas and room counts per listing"
+      acceptance_criteria:
+        - "One row per listing with a detail record; a listing without one has no row"
+        - "Rows are ordered by source, source_listing_id and carry transformation_version silver-v1"
+        - "Each of the nine flags is true just over its threshold, false exactly at it, and false, not null, with a missing input"
+        - "Sale and rent listings are judged at their own price and price-per-m² bounds"
+        - "A built area of 300,000 m² and a price of 2,000,000,000 yield flags and no error"
+        - "The existing suite is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_quality.py"
+          change: |
+            New file with a helper that builds an Arrow table of listing rows (the columns of
+            QUALITY_LISTING_COLUMNS, defaults for a plausible sale flat) and a test class calling
+            listing_quality(duckdb.connect(), listing). Add the cases of the acceptance criteria,
+            one subTest per flag and side.
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+          expected_failure: "ImportError: cannot import name 'listing_quality' from 'src.silver.rebuild'"
+        green:
+          change: |
+            listing_quality.sql with the nine conditions, each coalesced to false and every
+            product as BIGINT; listing_quality() and QUALITY_LISTING_COLUMNS as in the conventions.
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+        refactor:
+          change: "Thresholds as named constants set as DuckDB variables; header comment states the rules and their evidence document."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_quality.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_quality.sql"
+        - "tests/test_silver_listing_quality.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "1.2"
+      title: "The year flag follows the observation"
+      description: |
+        Add year_built_out_of_range after bathrooms_above_rooms: true when year_built is below
+        1500 or above the UTC year of detail_observed_at plus one.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["1.1"]
+      branch: "feature/listing-quality/1.2-year-flag"
+      commit_message: "feat(silver): flag a construction year outside 1500 to the observation year plus one"
+      acceptance_criteria:
+        - "year_built equal to the observation year plus one is false; plus two is true"
+        - "The same year_built with a detail observation one year later is false"
+        - "1499 is true, 1500 is false, a missing year_built is false"
+        - "A detail observation at 23:30 UTC on 31 December counts as that year"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_quality.py"
+          change: "The cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+          expected_failure: "KeyError: 'year_built_out_of_range' in every new case: the column does not exist."
+        green:
+          change: "The year condition in listing_quality.sql, with its two bounds as variables."
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sql/listing_quality.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_quality.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+
+    - id: "1.3"
+      title: "Location flags"
+      description: |
+        Add coordinates_missing and far_from_municipality before transformation_version, with the
+        haversine macro and the per-municipality median centre of the conventions. Assert the
+        full column list and Arrow types once, including for an empty listing table.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["1.2"]
+      branch: "feature/listing-quality/1.3-location-flags"
+      commit_message: "feat(silver): flag missing coordinates and listings far from their municipality"
+      acceptance_criteria:
+        - "A listing without latitude or without longitude has coordinates_missing true and far_from_municipality false"
+        - "In a municipality of three close listings and one 11 km away only the far one is flagged; one 9 km away is not"
+        - "The far listing does not move the centre: the three close listings stay unflagged"
+        - "Two municipalities each get their own centre"
+        - "A listing without a detail record does not count towards a centre"
+        - "A listing without a municipality is not far"
+        - "An empty listing table gives zero rows with the fifteen columns and their types"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_quality.py"
+          change: "The cases of the acceptance criteria; distances are built from a latitude offset of km / 111.195."
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+          expected_failure: "KeyError: 'coordinates_missing' or 'far_from_municipality' in every new case: the columns do not exist."
+        green:
+          change: "The haversine macro, the centre expression and the two conditions in listing_quality.sql."
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+        refactor:
+          change: "The column list as one constant shared by the tests of this file."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/sql/listing_quality.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_quality.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+
+    - id: "2.1"
+      title: "The table is written in both modes"
+      description: |
+        Insert "listing_quality" into SILVER_TABLES after "listing", so build_tables computes it
+        from the whole silver_listing (the oracle of the equality tests). In process_landing,
+        after listing and listing_text are written and before record_ingested, in both modes:
+        read QUALITY_LISTING_COLUMNS of Silver's listing from the catalog with _silver_columns,
+        call listing_quality, and overwrite the table with write_silver_tables using the run's
+        snapshot properties (allow_new_columns=backfill); add its snapshot id to
+        ProcessResult.snapshot_ids. With nothing pending, nothing is written.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.3"]
+      branch: "feature/listing-quality/2.1-pipeline"
+      commit_message: "feat(silver): maintain listing_quality in every run"
+      acceptance_criteria:
+        - "A backfill writes listing_quality with one row per listing with a detail record, equal to the rule over every run"
+        - "One commit at a time, three at a time and all at once give the same listing_quality rows as a backfill"
+        - "Tables that predate the feature: after some commits, listing_quality is dropped; processing the rest recreates it equal to a backfill, and every other table's schema is unchanged"
+        - "Nothing pending writes no snapshot to listing_quality"
+        - "The table's snapshot summary carries the same properties as the other tables"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            Insert "listing_quality" into SILVER_TABLES in src/silver/rebuild.py first: this is
+            the RED change for the existing equality and backfill tests. Add to
+            tests/test_silver_incremental.py the pre-feature-tables case for listing_quality,
+            after the pattern of test_tables_that_predate_listing_event_gain_it_equal_to_a_backfill.
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild -v"
+          expected_failure: |
+            tests/test_silver_rebuild.py fails on the set comparison (listing_quality missing from
+            snapshot_ids); tests/test_silver_incremental.py fails with NoSuchTableError for
+            vlc_housing_silver.listing_quality; the new pre-feature case fails the same way.
+        green:
+          change: "The catalog read, the listing_quality call and the overwrite in process_landing, as described."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_quality tests.test_silver_listing_event -v"
+        refactor:
+          change: "One private function for 'quality from the catalog', beside _events_from_silver; no duplicated column list."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+        - "tests/test_silver_listing_quality.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/listing.sql"
+        - "src/silver/sql/listing_event.sql"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit; drop the table if a run already created it"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "2.2"
+      title: "Implausible values in the synthetic landing"
+      description: |
+        Add one scenario to generate_landing_v3, built like _one_property_two_listings (a card
+        and a detail record each, in municipality "alba", on FIRST_DAY + 1):
+          - syn-implausible: sqm_built 2500, year_built 1400, price_eur 1000000, no coordinates;
+          - syn-far: latitude 39.605, longitude -0.37 (about 15 km north of the twins), rooms 5,
+            so it pairs with no listing under rule pg1.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["2.1"]
+      branch: "feature/listing-quality/2.2-synthetic-scenario"
+      commit_message: "test(synthetic): a listing with implausible values and one far from its municipality"
+      acceptance_criteria:
+        - "After a backfill of the synthetic landing, syn-implausible has sqm_built_above_max and year_built_out_of_range true and no other plausibility flag"
+        - "syn-far has far_from_municipality true; the three listings beside the centre do not"
+        - "No other listing has a plausibility flag or far_from_municipality (review L3)"
+        - "The existing Silver and Gold tests pass unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_quality.py"
+          change: "A class on a SQLite catalog that backfills generate_landing_v3(seed=1) and reads listing_quality; the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_listing_quality -v"
+          expected_failure: "AssertionError or KeyError: the table has no row for syn-implausible and syn-far."
+        green:
+          change: "The scenario function and its entry in the scenarios of generate_landing_v3."
+          command: "python -m unittest tests.test_silver_listing_quality tests.test_synthetic_landing -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "tests/test_silver_listing_quality.py"
+        - "tests/test_synthetic_landing.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/gold/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "tests/test_silver_listing_quality.py"
+
+    - id: "2.3"
+      title: "The command reports the table"
+      description: |
+        _report prints "listing_quality: snapshot <id>" after the listing_text line and before
+        the listing_event line.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.25
+      depends_on: ["2.2"]
+      branch: "feature/listing-quality/2.3-report"
+      commit_message: "feat(silver): report the listing_quality snapshot"
+      acceptance_criteria:
+        - "An incremental and a backfill run print a line matching ^listing_quality: snapshot \\d+$"
+        - "Every existing output line is unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          change: "assertRegex for the new line next to the existing listing_event line in the incremental and backfill tests."
+          command: "python -m unittest tests.test_silver_cli -v"
+          expected_failure: "AssertionError: Regex didn't match '(?m)^listing_quality: snapshot \\d+$'"
+        green:
+          change: "Add listing_quality to the names _report prints after the day tables."
+          command: "python -m unittest tests.test_silver_cli -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "3.1"
+      title: "Runbook, README and findings"
+      description: |
+        docs/silver-rebuild.md: add listing_quality to "The tables" and a section of its own (the
+        twelve flags with their thresholds; a flag is true only on evidence and false for a
+        missing input; a flag means "check", not "wrong", with the findings' note on houses with
+        plots; the centre is the median of the current listings; the table is recomputed and
+        replaced whole in every run, and why); add the line to the example output; mention the
+        table in the incremental-mode description. README.md: the status sentence says seven
+        Iceberg tables. docs/data-quality/silver-quality-2026-11.md: under "Proposed rules", a
+        pointer to the implemented flags, and under the sketch a note that the labels live in
+        Silver, not in Gold as sketched.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.3"]
+      branch: "feature/listing-quality/3.1-docs"
+      commit_message: "docs(silver): describe listing_quality"
+      acceptance_criteria:
+        - "The runbook states the flags, their thresholds, the missing-input rule, the reading and the whole-table replacement"
+        - "The README counts seven tables"
+        - "The findings point to the implemented rules and name Silver as their layer"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+        - "docs/data-quality/silver-quality-2026-11.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+        - "docs/data-quality/silver-quality-2026-11.md"
+
+    - id: "3.2"
+      title: "Deployment, first real run and implementation note (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR.
+        1. Wait for GitHub Actions to publish the image of the merge commit (tag = SHA).
+        2. In the operator's local, gitignored infra/silver/silver.auto.tfvars set silver_image
+           to that tag; terraform plan and apply in infra/silver. Only a new task definition
+           revision and the consumer's reference to it may change. Never stage, print or commit
+           the file.
+        3. Let the next landing commit or the catch-up start a task. No backfill. From the task
+           log take the listing_quality snapshot id and the task's duration (log-stream creation
+           to last event), and compare the duration with the 21 s to 24 s before.
+        4. In Athena, privately and as counts only: count the true values of each flag per
+           operation in listing_quality, and count the same rules written in Athena SQL over the
+           listing snapshot of the same run. The Athena rule computes the exact median of each
+           municipality's latitude and longitude as the mean of the two middle values of the
+           sorted values (review M3). The counts per flag and operation must be equal. No row is
+           returned or saved.
+        5. Write dev/plans/implementations/FEATURE-008-listing-quality.md with the counts beside
+           the architect's evidence of 2026-11-15, the snapshot date and the durations; set the
+           feature plan to complete, tick its success criteria, add the progress-log entry and
+           update the registry row.
+        Every AWS action needs explicit user approval in chat.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["3.1"]
+      branch: "feature/listing-quality/3.2-first-run-record"
+      commit_message: "docs(plans): FEATURE-008 first run and flag counts"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0 and prints a listing_quality snapshot"
+        - "Counts per flag and operation in listing_quality equal the Athena implementation of the rules on the same listing snapshot"
+        - "The task duration before and after is recorded"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-008-listing-quality.md"
+        - "dev/plans/FEATURE-008-listing-quality.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-008-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous tag and apply; drop vlc_housing_silver.listing_quality; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-008-listing-quality.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-008-listing-quality.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-008-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/listing-quality/integration"
+    task_branch_strategy: |
+      Create the integration branch from main and commit the feature plan, the review, this file
+      and the FEATURE-008 registry row there first. Task 1.1 starts from the integration branch;
+      each later task up to 3.1 starts from the integration branch after its predecessor is
+      merged. The tasks share listing_quality.sql, rebuild.py and one test file, so none runs in
+      parallel. Task 3.2 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 3.1, never rewriting history, and
+      run validation.final_commands there. The final PR goes from the integration branch to
+      main. Task 3.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): listing quality flags"
+    final_pr_description: |
+      Implements FEATURE-008: Silver gains listing_quality, twelve plausibility and location
+      flags per listing, recomputed whole from listing in every run. See
+      dev/reviews/REVIEW-FEATURE-008.md (approved). The table is created by the first run after
+      deployment; no backfill and no infrastructure change.
+
+  notes:
+    - "Never print, log or commit a real listing id, municipality or coordinate; task 3.2 outputs counts only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image in silver.auto.tfvars changes, by the operator, in task 3.2."
+    - "listing_quality() replaces the temporary table silver_listing; in process_landing call it with a fresh catalog read, after listing is written. listing_events() replaces silver_walk and silver_observation, so the order of the two calls does not matter."
+    - "If a threshold changes later, bump transformation_version and run the backfill in the same operator session (review L1)."
+    - "Every processed run writes a new snapshot of the table; expiry is the pending decision that also covers listing_event (review L2)."
+    - "Almost every synthetic listing has coordinates_missing true; do not add coordinates to other scenarios (review L3)."
+    - "Moving listing_property_group from Gold to Silver is the next feature, not part of this one; src/gold stays untouched."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
