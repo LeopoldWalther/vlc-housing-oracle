@@ -372,6 +372,11 @@ flags exclude a listing from its analysis.
 | Misplaced or missing coordinates | No coordinates, or farther than 10 km from the municipality's median | 1.6% of sale, 0.9% of rent |
 | Incomplete for a use case | The minimum requirements above, one flag per use case | Driven by `year_built` and `sqm_usable` where a use case needs them |
 
+Implemented since: the certain duplicate as the Gold dataset `listing_property_group`
+([`docs/gold-property-group.md`](../gold-property-group.md), FEATURE-007), and the implausible
+values and the coordinate rules as the Silver table `listing_quality`
+([runbook](../silver-rebuild.md#listing_quality), FEATURE-008).
+
 ## Sketch of the follow-up feature
 
 - **A labels table next to the facts,** in Gold, keyed by listing and carrying a
@@ -388,6 +393,10 @@ flags exclude a listing from its analysis.
   values, and the exact rate of the certain rule recorded then.
 - **Upstream reports,** outside this repository: the missing one-room value, and the health alarm
   for a week without a finished sweep.
+
+The quality flags were implemented in Silver, not in Gold as sketched here: validating an entity
+is Silver's work, and Gold holds use-case-specific datasets (decision of 2026-11-15). They carry
+Silver's `transformation_version` instead of a `quality_version`.
 
 ## Limits of these findings
 
