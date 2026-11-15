@@ -79,6 +79,7 @@ QUALITY_THRESHOLDS = {
     "bathrooms_over_rooms_max": 2,
     "year_built_min": 1500,
     "year_built_ahead_max": 1,
+    "municipality_distance_max_km": 10,
 }
 
 # Intermediate views shared by several Silver statements, created before them.

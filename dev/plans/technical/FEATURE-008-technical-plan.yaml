@@ -196,7 +196,7 @@ technical_plan:
         Add coordinates_missing and far_from_municipality before transformation_version, with the
         haversine macro and the per-municipality median centre of the conventions. Assert the
         full column list and Arrow types once, including for an empty listing table.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.2"]
