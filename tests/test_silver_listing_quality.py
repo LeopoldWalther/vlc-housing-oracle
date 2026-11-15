@@ -1,12 +1,16 @@
 """listing_quality: one flag per plausibility and location rule, true only on evidence."""
 
+import tempfile
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+from pyiceberg.catalog.sql import SqlCatalog
 
-from src.silver.rebuild import listing_quality
+from src.silver.rebuild import NAMESPACE, listing_quality, local_commits, process_landing
+from src.synthetic.landing import generate_landing_v3
 
 OBSERVED = datetime(2026, 10, 5, 8, tzinfo=UTC)
 
@@ -314,6 +318,52 @@ class LocationFlagTest(unittest.TestCase):
         }
 
         self.assertIs(self.far_flags(*self.CLOSE, lost)["syn-lost"], False)
+
+
+class SyntheticLandingTest(unittest.TestCase):
+    """The table a backfill of the synthetic landing writes."""
+
+    PLAUSIBILITY_FLAGS = FLAGS[:10]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(cls.enterClassContext(tempfile.TemporaryDirectory()))
+        landing = root / "landing"
+        landing.mkdir()
+        generate_landing_v3(landing, seed=1)
+        catalog = SqlCatalog("test", uri=f"sqlite:///{root}/catalog.db", warehouse=f"file://{root}")
+        with duckdb.connect() as connection:
+            process_landing(
+                connection,
+                catalog,
+                landing=str(landing),
+                mode="backfill",
+                list_commits=lambda: local_commits(landing),
+                now=lambda: datetime(2026, 11, 1, tzinfo=UTC),
+            )
+        rows = catalog.load_table(f"{NAMESPACE}.listing_quality").scan().to_arrow().to_pylist()
+        cls.flags = {
+            row["source_listing_id"]: {name for name in FLAGS if row[name]} for row in rows
+        }
+
+    def test_the_implausible_listing_has_exactly_its_two_plausibility_flags(self) -> None:
+        self.assertEqual(
+            {"sqm_built_above_max", "year_built_out_of_range", "coordinates_missing"},
+            self.flags["syn-implausible"],
+        )
+
+    def test_the_listing_far_from_its_municipality_is_the_only_far_one(self) -> None:
+        self.assertEqual({"far_from_municipality"}, self.flags["syn-far"])
+        self.assertEqual(
+            ["syn-far"],
+            [key for key, flags in self.flags.items() if "far_from_municipality" in flags],
+        )
+
+    def test_no_other_listing_has_a_plausibility_flag(self) -> None:
+        self.assertEqual(
+            ["syn-implausible"],
+            [key for key, flags in self.flags.items() if flags & set(self.PLAUSIBILITY_FLAGS)],
+        )
 
 
 if __name__ == "__main__":

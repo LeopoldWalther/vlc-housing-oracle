@@ -318,7 +318,7 @@ technical_plan:
           - syn-implausible: sqm_built 2500, year_built 1400, price_eur 1000000, no coordinates;
           - syn-far: latitude 39.605, longitude -0.37 (about 15 km north of the twins), rooms 5,
             so it pairs with no listing under rule pg1.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["2.1"]

@@ -420,6 +420,7 @@ def generate_landing_v3(root: Path, *, seed: int) -> None:
         _failed_run(),
         _detail_older_than_latest_card(),
         _one_property_two_listings(),
+        _implausible_and_misplaced(),
     )
     rows: dict[str, list[LandingRow]] = {table: [] for table in landing_v3_columns()}
     for scenario in scenarios:
@@ -529,6 +530,26 @@ def _one_property_two_listings() -> dict[str, list[LandingRow]]:
         ("syn-twin-a", 300_000, place | {"floor": "2", "condition": "good"}),
         ("syn-twin-b", 306_000, place | {"latitude": 39.4709, "floor": "2", "condition": "good"}),
         ("syn-new-unit", 303_000, place | {"latitude": 39.4705, "floor": "3", "condition": "new"}),
+    )
+    return _merge(
+        *(
+            _merge(
+                {"observation": [_card(listing_id, "alba", observed, price_eur=price)]},
+                _detail(listing_id, "alba", observed, price_eur=price, **attributes),
+            )
+            for listing_id, price, attributes in listings
+        )
+    )
+
+
+def _implausible_and_misplaced() -> dict[str, list[LandingRow]]:
+    # syn-implausible: a built area and a construction year no home has.
+    # syn-far: about 15 km north of the municipality's other located listings, with a room count
+    # of its own so that it pairs with none of them.
+    observed = _at(FIRST_DAY + timedelta(days=1), 7, 50)
+    listings = (
+        ("syn-implausible", 1_000_000, {"sqm_built": 2_500, "year_built": 1400}),
+        ("syn-far", 280_000, {"latitude": 39.605, "longitude": -0.37, "rooms": 5}),
     )
     return _merge(
         *(
