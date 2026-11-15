@@ -1,6 +1,6 @@
 # FEATURE-008 — Listing quality flags: implausible values and misplaced coordinates
 
-**Status:** 🔵 Planned · **Effort:** M (~7h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~7h) · **Priority:** High
 **Branch root:** `feature/listing-quality` · **Created:** 2026-11-15 · **Updated:** 2026-11-15
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-008.md`).
@@ -235,7 +235,7 @@ Rule tasks test the flag function on a few hand-written listing rows; no task re
 
 Each task adds columns that do not exist before it, so its test fails first (review M1).
 
-- [ ] **1.1 The rows and nine plausibility flags.**
+- [x] **1.1 The rows and nine plausibility flags.**
     - RED:
         - one row per listing with a detail record, and none for a listing without one;
         - rows are ordered by key and carry `transformation_version`;
