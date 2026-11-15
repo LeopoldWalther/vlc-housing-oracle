@@ -40,6 +40,7 @@ SILVER_TABLES = (
     "observation",
     "listing_detail",
     "listing",
+    "listing_quality",
     "listing_text",
     "listing_event",
 )
@@ -210,12 +211,16 @@ def process_landing(
             run_started=run_started,
             properties=properties,
         )
-    # A run can retract or add events of any listing, so the table is recomputed and replaced
-    # whole; it reads Silver after this run's days and listings are written.
+    # A run can retract or add events of any listing, and move a municipality's centre and with
+    # it the flag of any listing, so both tables are recomputed and replaced whole; they read
+    # Silver after this run's days and listings are written.
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
-        {"listing_event": _events_from_silver(connection, catalog)},
+        {
+            "listing_quality": _quality_from_silver(connection, catalog),
+            "listing_event": _events_from_silver(connection, catalog),
+        },
         properties,
         allow_new_columns=backfill,
     )
@@ -363,6 +368,13 @@ def _compute_listings(
     )
     listing_text = connection.sql(_statement("listing_text")).to_arrow_table()
     return listing, listing_text
+
+
+def _quality_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:
+    """``listing_quality`` over Silver's current listing."""
+    return listing_quality(
+        connection, _silver_columns(connection, catalog, "listing", QUALITY_LISTING_COLUMNS)
+    )
 
 
 def _events_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:

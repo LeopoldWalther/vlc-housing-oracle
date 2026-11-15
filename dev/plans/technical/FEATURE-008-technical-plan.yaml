@@ -254,7 +254,7 @@ technical_plan:
         call listing_quality, and overwrite the table with write_silver_tables using the run's
         snapshot properties (allow_new_columns=backfill); add its snapshot id to
         ProcessResult.snapshot_ids. With nothing pending, nothing is written.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.3"]
