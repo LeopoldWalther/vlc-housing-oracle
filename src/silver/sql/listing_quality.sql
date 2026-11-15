@@ -45,6 +45,13 @@ SELECT
     coalesce(rooms > getvariable('rooms_max'), false) AS rooms_above_max,
     coalesce(bathrooms > rooms::BIGINT + getvariable('bathrooms_over_rooms_max'), false)
         AS bathrooms_above_rooms,
+    -- The upper bound follows the observation, not the run's clock, so a backfill gives the same
+    -- flags: a listing may announce a building finished in the year after it was seen.
+    coalesce(
+        year_built < getvariable('year_built_min')
+        OR year_built > year(detail_observed_at) + getvariable('year_built_ahead_max'),
+        false
+    ) AS year_built_out_of_range,
     -- A drop of more than half: twice the price is still below the previous price.
     coalesce(2 * price_eur::BIGINT < prev_price_eur, false) AS price_drop_above_max,
     getvariable('transformation_version') AS transformation_version

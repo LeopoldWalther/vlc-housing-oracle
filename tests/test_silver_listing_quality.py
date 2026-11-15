@@ -85,7 +85,7 @@ class RowsTest(unittest.TestCase):
         (row,) = quality({})
 
         flags = {name: value for name, value in row.items() if isinstance(value, bool)}
-        self.assertEqual(9, len(flags))
+        self.assertEqual(10, len(flags))
         self.assertEqual(set(), {name for name, value in flags.items() if value})
 
 
@@ -170,6 +170,37 @@ class PlausibilityFlagTest(unittest.TestCase):
         self.assertIs(row["price_out_of_bounds"], True)
         self.assertIs(row["price_per_sqm_above_max"], False)
         self.assertIs(row["price_drop_above_max"], False)
+
+
+class YearFlagTest(unittest.TestCase):
+    """The upper bound is the UTC year of the detail observation plus one, not the run's clock."""
+
+    def test_the_year_after_the_observation_is_in_range_and_the_one_after_is_not(self) -> None:
+        self.assertIs(flag("year_built_out_of_range", year_built=2027), False)
+        self.assertIs(flag("year_built_out_of_range", year_built=2028), True)
+
+    def test_a_later_observation_moves_the_upper_bound(self) -> None:
+        a_year_later = OBSERVED.replace(year=2027)
+
+        self.assertIs(
+            flag("year_built_out_of_range", year_built=2028, detail_observed_at=a_year_later),
+            False,
+        )
+
+    def test_the_last_minutes_of_a_utc_year_count_as_that_year(self) -> None:
+        new_years_eve = datetime(2026, 12, 31, 23, 30, tzinfo=UTC)
+
+        self.assertIs(
+            flag("year_built_out_of_range", year_built=2028, detail_observed_at=new_years_eve),
+            True,
+        )
+
+    def test_the_lower_bound_is_1500(self) -> None:
+        self.assertIs(flag("year_built_out_of_range", year_built=1499), True)
+        self.assertIs(flag("year_built_out_of_range", year_built=1500), False)
+
+    def test_a_missing_year_is_not_out_of_range(self) -> None:
+        self.assertIs(flag("year_built_out_of_range", year_built=None), False)
 
 
 if __name__ == "__main__":
