@@ -285,7 +285,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
         - a run with nothing pending writes nothing.
     - GREEN: `listing_quality` in `SILVER_TABLES`, and `process_landing` computes it from
         Silver's `listing` and writes it before the ingest log.
-- [ ] **2.2 Implausible values in the synthetic data.**
+- [x] **2.2 Implausible values in the synthetic data.**
     - RED: the synthetic landing gains one scenario:
         - one listing with a built area of 2,500 m² and a construction year of 1400;
         - one listing in the twins' municipality about 15 km from them.
