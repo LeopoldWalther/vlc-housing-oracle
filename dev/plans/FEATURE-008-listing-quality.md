@@ -276,7 +276,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
 
 ### Phase 2 — In the Silver run
 
-- [ ] **2.1 The run writes the table.**
+- [x] **2.1 The run writes the table.**
     - RED, over a SQLite catalog and synthetic landing:
         - a backfill writes `listing_quality` with the columns and types above;
         - commits processed one at a time give the same rows as a backfill;
