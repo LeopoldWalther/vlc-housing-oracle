@@ -145,7 +145,7 @@ technical_plan:
       description: |
         Add year_built_out_of_range after bathrooms_above_rooms: true when year_built is below
         1500 or above the UTC year of detail_observed_at plus one.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["1.1"]

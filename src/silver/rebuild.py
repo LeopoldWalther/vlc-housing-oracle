@@ -77,6 +77,8 @@ QUALITY_THRESHOLDS = {
     "rent_price_per_sqm_max": 60,
     "rooms_max": 12,
     "bathrooms_over_rooms_max": 2,
+    "year_built_min": 1500,
+    "year_built_ahead_max": 1,
 }
 
 # Intermediate views shared by several Silver statements, created before them.

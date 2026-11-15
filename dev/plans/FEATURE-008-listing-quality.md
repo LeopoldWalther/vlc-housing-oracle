@@ -249,7 +249,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
         The test fails because the statement and its function do not exist.
     - GREEN: `listing_quality.sql` and `listing_quality()` in `src/silver/rebuild.py`.
     - REFACTOR: thresholds as named constants.
-- [ ] **1.2 The year flag follows the observation.**
+- [x] **1.2 The year flag follows the observation.**
     - RED:
         - `year_built` equal to the observation year plus one expects false, and plus two
             expects true;
