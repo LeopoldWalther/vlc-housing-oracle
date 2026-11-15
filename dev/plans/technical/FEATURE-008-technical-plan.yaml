@@ -419,7 +419,7 @@ technical_plan:
         Iceberg tables. docs/data-quality/silver-quality-2026-11.md: under "Proposed rules", a
         pointer to the implemented flags, and under the sketch a note that the labels live in
         Silver, not in Gold as sketched.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.3"]

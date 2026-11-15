@@ -300,7 +300,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
 
 ### Phase 3 — Documentation and deployment
 
-- [ ] **3.1 Documentation.**
+- [x] **3.1 Documentation.**
     - `docs/silver-rebuild.md`: the table in the table list, a `listing_quality` section with
         the rules, their evidence by reference to the findings and the "check, not wrong"
         reading, and the report line.
