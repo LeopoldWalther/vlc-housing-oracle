@@ -367,7 +367,7 @@ technical_plan:
       description: |
         _report prints "listing_quality: snapshot <id>" after the listing_text line and before
         the listing_event line.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.25
       depends_on: ["2.2"]

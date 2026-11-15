@@ -293,7 +293,7 @@ Each task adds columns that do not exist before it, so its test fails first (rev
         A backfill over it expects exactly those flags on those listings. The existing Silver and
         property-group tests stay green, which shows the scenario disturbs no other case.
     - GREEN: the scenario, using the attribute overrides of `_detail`.
-- [ ] **2.3 The command reports the table.**
+- [x] **2.3 The command reports the table.**
     - RED: the command's output holds a `listing_quality: snapshot <id>` line after a run that
         processed something.
     - GREEN: the report line.
