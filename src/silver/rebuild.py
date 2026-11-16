@@ -49,6 +49,8 @@ SILVER_TABLES = (
     "listing",
     "listing_quality",
     "listing_text",
+    "feature_pattern",
+    "listing_feature_label",
     "listing_event",
     "listing_price",
 )
@@ -76,6 +78,9 @@ LABEL_LISTING_COLUMNS = (
     *QUALITY_LISTING_COLUMNS,
     *(name for name in PROPERTY_GROUP_LISTING_COLUMNS if name not in QUALITY_LISTING_COLUMNS),
 )
+
+# The columns of Silver listing_text that the feature rules read.
+FEATURE_TEXT_COLUMNS = ("source", "source_listing_id", "features")
 
 # Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
 # Prices are EUR for sale and EUR per month for rent; areas are m².
@@ -243,9 +248,10 @@ def process_landing(
             properties=properties,
         )
     # A run can retract or add events of any listing, add a sighting to any listing's price
-    # history, move a municipality's centre and with it the flag of any listing, and join or split
-    # property groups of listings it did not touch, so these tables are recomputed and replaced
-    # whole; they read Silver after this run's days and listings are written.
+    # history, move a municipality's centre and with it the flag of any listing, join or split
+    # property groups of listings it did not touch, and change any listing's features and with
+    # them the counts of any wording, so these tables are recomputed and replaced whole; they
+    # read Silver after this run's days and listings are written.
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
@@ -405,17 +411,25 @@ def _compute_listings(
 def _labels_from_silver(
     connection: duckdb.DuckDBPyConnection, catalog: Catalog
 ) -> dict[str, pa.Table]:
-    """``listing_quality`` and the property groups over one read of Silver's current listing."""
-    # Read before listing_quality(): it replaces silver_listing, which the read falls back to
-    # while the catalog has no listing table, with the quality columns only.
-    listing = _silver_columns(connection, catalog, "listing", LABEL_LISTING_COLUMNS)
+    """The label tables over one read of Silver's current ``listing`` and ``listing_text``.
+
+    These are ``listing_quality``, the property groups, ``feature_pattern`` and
+    ``listing_feature_label``.
+    """
+    # Read both before any rule: each rule replaces silver_listing or silver_listing_text, which
+    # the reads fall back to while the catalog has no such table, with its own columns only.
+    listing = _silver_columns(connection, catalog, "listing", None)
+    listing_text = _silver_columns(connection, catalog, "listing_text", FEATURE_TEXT_COLUMNS)
+    grouped = listing.select(LABEL_LISTING_COLUMNS)
     return {
         "listing_quality": listing_quality(connection, listing.select(QUALITY_LISTING_COLUMNS)),
         PROPERTY_GROUP_TABLE: property_group_rows(
-            listing,
-            duplicate_pairs(connection, listing),
+            grouped,
+            duplicate_pairs(connection, grouped),
             transformation_version=TRANSFORMATION_VERSION,
         ),
+        "feature_pattern": feature_patterns(connection, listing, listing_text),
+        "listing_feature_label": listing_feature_labels(connection, listing_text),
     }
 
 
@@ -447,15 +461,20 @@ def _history_from_silver(
 
 
 def _silver_columns(
-    connection: duckdb.DuckDBPyConnection, catalog: Catalog, name: str, columns: Sequence[str]
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    name: str,
+    columns: Sequence[str] | None,
 ) -> pa.Table:
+    """Silver's current rows of one table; ``columns`` of None reads every column."""
     identifier = f"{NAMESPACE}.{name}"
     if catalog.table_exists(identifier):
-        return catalog.load_table(identifier).scan(selected_fields=tuple(columns)).to_arrow()
-    # A day table appears with its first day; until then this run's own result, empty as well,
+        selected = ("*",) if columns is None else tuple(columns)
+        return catalog.load_table(identifier).scan(selected_fields=selected).to_arrow()
+    # A table appears with its first rows; until then this run's own result, empty as well,
     # gives the columns their types.
     return connection.sql(
-        f"SELECT {', '.join(columns)} FROM silver_{name} LIMIT 0"
+        f"SELECT {'*' if columns is None else ', '.join(columns)} FROM silver_{name} LIMIT 0"
     ).to_arrow_table()
 
 
