@@ -24,7 +24,7 @@ from pyiceberg.expressions import In
 from src.contracts import landing_v3_sha256
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
-from src.silver.feature_patterns import register_feature_registry
+from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
 from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
@@ -506,6 +506,28 @@ def listing_quality(connection: duckdb.DuckDBPyConnection, listing: pa.Table) ->
     return connection.sql(_statement("listing_quality")).to_arrow_table()
 
 
+def feature_patterns(
+    connection: duckdb.DuckDBPyConnection, listing: pa.Table, listing_text: pa.Table
+) -> pa.Table:
+    """The ``feature_pattern`` rows: every feature wording of Silver's ``listing_text``.
+
+    The given tables replace the temporary tables ``silver_listing`` and ``silver_listing_text``:
+    call this after every other statement of the session that reads them. ``listing`` needs the
+    key and every attribute column a registry target names; ``listing_text`` needs the key and
+    ``features``.
+    """
+    _prepare(connection)
+    _replace_silver(connection, {"listing": listing, "listing_text": listing_text})
+    return connection.sql(_statement("feature_pattern")).to_arrow_table()
+
+
+def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
+    for name, rows in tables.items():
+        connection.register(f"given_{name}", rows)
+        connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS FROM given_{name}")
+        connection.unregister(f"given_{name}")
+
+
 def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     # DuckDB exports instants in the session zone and Iceberg accepts only UTC.
     connection.execute("SET TimeZone = 'UTC'")
@@ -515,6 +537,8 @@ def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
         connection.execute(f"SET VARIABLE {name} = {value}::BIGINT")
     connection.execute(_statement("redact"))
     register_feature_registry(connection)
+    without_column = ", ".join(f"'{target}'" for target in (*LABEL_TARGETS, UNREAD))
+    connection.execute(f"SET VARIABLE feature_targets_without_column = [{without_column}]")
 
 
 def _statement(name: str) -> str:
