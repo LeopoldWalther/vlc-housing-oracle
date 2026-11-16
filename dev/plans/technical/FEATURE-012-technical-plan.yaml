@@ -170,7 +170,7 @@ technical_plan:
         6. Create dev/plans/implementations/FEATURE-012-text-labels.md with a section
            "Evaluation set": the date, the strata with population and sample size, the seed, and
            the distribution of the hand labels as counts. No text, no hash, no identifier.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: []
