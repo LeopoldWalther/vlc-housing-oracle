@@ -379,7 +379,7 @@ technical_plan:
         Silver table, its section in the runbook and FEATURE-013; the note under the sketch says
         that both label sets live in Silver.
         Closed plans and reviews under dev/ keep their old links (review L3).
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["2.3"]
