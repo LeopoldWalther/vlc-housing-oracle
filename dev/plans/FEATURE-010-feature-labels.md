@@ -1,6 +1,6 @@
 # FEATURE-010 — Labels from listing features, and a check for unread features
 
-**Status:** 🔵 Planned · **Effort:** M (~8h) · **Priority:** High
+**Status:** 🔵 Planned · **Effort:** M (~9h) · **Priority:** High
 **Branch root:** `feature/feature-labels` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-010.md`).
@@ -72,18 +72,23 @@ is noticed in the next run and not months later.
 - **Assumption:** the feature label agrees with the text. — **Evidence:** the description also
     mentions a tenant for 1,015 of the 1,157 listings and bare ownership for 67 of 71. —
     **If wrong:** the label is defined as "the portal's feature says so", which stays true.
-- **Assumption:** the vocabulary may be committed. — **Evidence:** the wordings are generic
-    phrases of the portal's interface; the repository already holds such phrases in the
-    synthetic generator. Unvalidated against the leak guard. — **If wrong:** the registry moves
-    to a private configuration file passed by path (question below).
+- **Assumption:** the vocabulary may be committed. — **Evidence:** the user approved it on
+    2026-11-16, and the review read all 100 wordings: each is a generic phrase of the portal's
+    interface. The leak guard's own function accepts 99 of them and refuses one, which holds
+    the source's word for a property. — **If wrong:** N/A, validated; the refused wording is
+    listed by its SHA-256 digest, the way the leak guard lists its terms (review M1).
 
 ## Design
 
 - **Primary approach:**
-    - A wording is a feature string in lower case with every number replaced by `#`.
-    - The registry is one table in code, `src/silver/feature_patterns.py`: wording, `target`
-        (the `listing` column or label it informs, or `none` for wordings that only repeat a
-        category), and nothing else.
+    - A wording is a feature string, trimmed, with every number (a run of digits, with groups
+        after `.` or `,`) replaced by `#`, in lower case.
+    - The registry is one table in code, `src/silver/feature_patterns.py`: wording and `target`,
+        plus the furnishing value for the three furnishing wordings. A target is the `listing`
+        column the wording informs (the first, when it informs two), a label of this feature,
+        or `unread` for a meaning no column carries yet (review M2). No wording needs the
+        planned target `none`, so it does not exist. The run joins wordings to the registry by their
+        SHA-256, so one wording can be listed by digest alone.
     - `feature_pattern.sql` unnests the features, normalises them and joins the registry.
         `listing_feature_label.sql` reads the same normalised wordings.
     - Both tables are computed from Silver's `listing_text` and `listing` after a run has
@@ -95,10 +100,12 @@ is noticed in the next run and not months later.
         it), `transformation_version`.
     - `feature_pattern`: one row per wording; `pattern`, `listings`, `target` (null for an
         unknown wording), `listings_target_missing` (listings with the wording whose target
-        column is null; null when the target is not a `listing` column),
-        `transformation_version`.
-    - The run reports `unknown feature patterns: <n>` and publishes it as a metric with the
-        existing `--metrics` flag. An alarm on a value above zero mails the existing topic.
+        column is missing: null, `unknown`, or an empty list; null when the target is not a
+        `listing` column), `transformation_version`.
+    - The run reports `unknown feature patterns: <n>` and publishes it as the metric
+        `UnknownFeaturePatterns` with the existing `--metrics` flag, only when it processed
+        something. An alarm on a value above zero mails the existing topic; it ignores missing
+        data, so it stays in alarm until a run reports zero and mails once per episode.
 - **OOP / SOLID:** pure functions and SQL statements are sufficient.
 - **Patterns:** none.
 - **Deliberately rejected complexity:**
@@ -111,12 +118,13 @@ is noticed in the next run and not months later.
 
 ### Phase 1 — Wordings
 
-- [ ] **1.1 Normalisation and the pattern table.** RED: two features that differ only in a
-    number are one wording; a wording in the registry carries its target; one outside it has a
-    null target; `listings_target_missing` counts listings whose target column is null. Fails
-    because the function does not exist.
-- [ ] **1.2 The registry.** RED: every registry entry is already normalised and unique, and
-    every target is a `listing` column, a label of this feature, or `none`.
+- [ ] **1.1 The registry and the normalisation.** RED: two features that differ only in a
+    number are one wording; every registry entry is already normalised and unique; every target
+    is a `listing` column, a label of this feature or `unread`; the registry has 100 entries,
+    one of them by digest.
+- [ ] **1.2 The pattern table.** RED: a wording in the registry carries its target; one outside
+    it has a null target; `listings_target_missing` counts listings whose target column is
+    missing. Fails because the function does not exist.
 
 ### Phase 2 — Labels
 
@@ -130,8 +138,8 @@ is noticed in the next run and not months later.
 
 - [ ] **3.1 Pipeline.** RED: a backfill of the synthetic landing writes both tables; stepwise
     commits give the same rows; a catalog that predates them gains them without a backfill.
-- [ ] **3.2 Synthetic scenario, report and metric.** RED: the generator holds a rental with a
-    furnishing wording, a sale with a tenant and one feature outside the registry; the command
+- [ ] **3.2 Synthetic scenario, report and metric.** RED: the generator holds a listing with
+    a furnishing wording, a sale with a tenant and one feature outside the registry; the command
     prints both snapshots and `unknown feature patterns: 1`; with `--metrics` the fake client
     receives the value.
 
@@ -148,11 +156,12 @@ is noticed in the next run and not months later.
 
 ## Files
 
-- **Create:** `src/silver/feature_patterns.py`, `src/silver/sql/feature_pattern.sql`,
-    `src/silver/sql/listing_feature_label.sql`.
+- **Create:** `src/silver/feature_patterns.py`, `src/silver/sql/feature_wording.sql`,
+    `src/silver/sql/feature_pattern.sql`, `src/silver/sql/listing_feature_label.sql`.
 - **Change:** `src/silver/rebuild.py`, `src/synthetic/landing.py`, `infra/silver/alerts.tf`,
     `docs/silver-rebuild.md`, `README.md`.
-- **Tests:** `tests/test_silver_feature_pattern.py`, `tests/test_silver_feature_label.py` (new),
+- **Tests:** `tests/test_silver_feature_registry.py`, `tests/test_silver_feature_pattern.py`,
+    `tests/test_silver_feature_label.py` (new),
     `tests/test_silver_incremental.py`, `tests/test_silver_cli.py`,
     `tests/test_synthetic_landing.py`.
 
@@ -206,8 +215,7 @@ is noticed in the next run and not months later.
 
 ## Open questions & risks
 
-- **Question (user, at review):** may the hundred wordings be committed to the public
-    repository, or should the registry be a private configuration file?
+- **Answered (user, 2026-11-16):** the wordings may be committed to the public repository.
 - **Question (user, before 4.3):** approve the alarm and the deployment.
 - **Risk:** the label is read as "certain". — *Mitigation:* documented as "the portal's feature
     says so"; the text-based labels of FEATURE-012 are a second, independent reading.
@@ -219,3 +227,7 @@ is noticed in the next run and not months later.
 - **2026-11-16** — The acquisition side corrected three of the unread wordings (one room, ground
     floor, heat pump) as extraction version 3. Their counts in `feature_pattern` fall to zero
     once its replay has landed; until then they show the gap.
+- **2026-11-16** — Reviewed and approved. Corrections folded in: one wording is listed by
+    digest because the leak guard refuses a word of it; the target `unread` for meanings no
+    column carries; the exact normalisation and what "missing" means; the registry before the
+    pattern table; the alarm's handling of missing data. The user approved the public registry.

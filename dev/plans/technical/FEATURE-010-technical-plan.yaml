@@ -1,0 +1,735 @@
+# Technical plan for FEATURE-010 — Labels from listing features, and a check for unread features.
+# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1 to M4,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+# Implementation starts after FEATURE-009 is merged to main.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-010"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-16"
+    version: "1.0"
+    total_tasks: 9
+    estimated_hours: "9"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "2.1", "2.2", "3.1", "3.2", "4.1", "4.2", "4.3"]
+    feature_plan: "dev/plans/FEATURE-010-feature-labels.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-010.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "terraform-validate"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - A wording is feature_wording(feature), a temporary SQL macro defined in
+      src/silver/sql/feature_wording.sql:
+        lower(regexp_replace(trim(feature), '[0-9]+([.,][0-9]+)*', '#', 'g'))
+      The 'g' option is required: without it DuckDB replaces the first number only.
+    - src/silver/feature_patterns.py holds the registry and nothing else that has behavior:
+        KNOWN_PATTERNS          dict of wording -> target, the 99 entries of `registry` below
+        KNOWN_PATTERN_DIGESTS   dict of SHA-256 hex -> target, the one entry of `registry_digests`
+        FURNISHING_VALUES       dict of wording -> furnished | kitchen_only | unfurnished
+        LABEL_TARGETS           ("is_tenant_occupied", "is_bare_ownership", "furnishing")
+        UNREAD                  "unread"
+        registry_rows() -> pyarrow.Table with pattern_sha256 (string), target (string) and
+                           label_value (string, null except for the furnishing wordings)
+        register_feature_registry(connection)
+                           runs feature_wording.sql and replaces the temporary table
+                           feature_registry with registry_rows(); _prepare() calls it
+      A digest is hashlib.sha256 of the wording's UTF-8 bytes as lower-case hex, which equals
+      DuckDB's sha256(); the statements join on sha256(pattern) = pattern_sha256.
+    - A target is a column of listing_detail in contracts/landing/v3/schema.json (these are the
+      attribute columns of Silver's listing), one of LABEL_TARGETS, or UNREAD.
+    - The wording that is listed by digest is never written in clear in the repository: not in
+      code, tests, fixtures, documentation or plans. The leak guard refuses one of its words.
+    - The table feature_pattern: one row per wording seen in Silver's listing_text.features,
+      ordered by listings descending, then pattern. Columns, in order, with Arrow types:
+        pattern                    string
+        listings                   int32     distinct listings (source, source_listing_id)
+                                             with the wording
+        target                     string    null for a wording that is not in the registry
+        listings_target_missing    int32     of those listings, the ones whose target column
+                                             is missing; null when the target is null, a label
+                                             or UNREAD
+        transformation_version     string
+      A column is missing for a listing when its value, cast to VARCHAR, is null, 'unknown' or
+      '[]'. The statement unpivots every column of silver_listing except the two key columns
+      with nulls included, so no column name is written into SQL.
+    - The table listing_feature_label: one row per row of listing_text, ordered by source,
+      source_listing_id. Columns, in order, with Arrow types:
+        source                    string
+        source_listing_id         string
+        is_tenant_occupied        bool      never null
+        is_bare_ownership         bool      never null
+        furnishing                string    furnished, kitchen_only, unfurnished; null when no
+                                            wording states it or two wordings state different
+                                            values
+        transformation_version    string
+      The labels do not depend on the listing's operation.
+    - Both statements read the temporary tables silver_listing_text (source, source_listing_id,
+      features) and feature_registry; feature_pattern.sql also reads silver_listing with every
+      column. feature_patterns(connection, listing, listing_text) and
+      listing_feature_labels(connection, listing_text) in src/silver/rebuild.py are the public
+      entry points, after the pattern of listing_quality(): each prepares the session, replaces
+      the temporary tables it reads with the given Arrow tables and runs its statement.
+    - From task 3.1 on, feature_pattern and listing_feature_label are members of SILVER_TABLES,
+      directly after listing_text. process_landing reads Silver's whole listing (every column)
+      and listing_text (source, source_listing_id, features) once, before any label rule runs,
+      and passes each rule its columns.
+    - The run's count of unknown wordings is the number of rows of feature_pattern with a null
+      target. It is ProcessResult.unknown_feature_patterns, printed as `unknown feature
+      patterns: <n>` and, with --metrics, published as UnknownFeaturePatterns (Unit Count) in
+      the namespace of PendingRuns. A run with nothing pending prints and publishes neither.
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table or column changes.
+    - Tests use synthetic values only (source "syn") and compare results as Arrow rows
+      (to_pylist()). Feature strings in tests are wordings of the registry or invented ones.
+    - All repository artifacts are in English; the wordings are Spanish as the portal writes
+      them.
+
+  # wording  =>  target. The implementer copies these 99 entries into KNOWN_PATTERNS unchanged.
+  registry: |
+      # habitaciones  =>  rooms
+      segunda mano/buen estado  =>  condition
+      construido en #  =>  year_built
+      #ª planta exterior  =>  floor
+      aire acondicionado  =>  has_ac_state
+      con ascensor  =>  has_elevator_state
+      # baños  =>  bathrooms
+      armarios empotrados  =>  has_fitted_wardrobes_state
+      # m² construidos  =>  sqm_built
+      consumo: # kwh/m² año  =>  energy_consumption_kwh_m2
+      # m² construidos, # m² útiles  =>  sqm_built
+      emisiones: # kg co#/m² año  =>  energy_emissions_kg_m2
+      # baño  =>  bathrooms
+      consumo:  =>  energy_consumption_rating
+      plaza de garaje incluida en el precio  =>  parking_included_in_price
+      balcón  =>  has_balcony_state
+      terraza  =>  has_terrace_state
+      trastero  =>  has_storage_room_state
+      sin ascensor  =>  has_elevator_state
+      no dispone de calefacción  =>  has_heating
+      emisiones:  =>  energy_emissions_rating
+      amueblado y cocina equipada  =>  furnishing
+      piscina  =>  has_pool_state
+      terraza y balcón  =>  has_terrace_state
+      jardín  =>  has_garden_state
+      parcela de # m²  =>  sqm_plot
+      casa o chalet independiente  =>  property_type
+      calefacción individual: eléctrica  =>  heating_type
+      orientación este  =>  orientation
+      segunda mano/para reformar  =>  condition
+      # plantas  =>  storeys
+      solo acceso exterior adaptado para personas con movilidad reducida  =>  unread
+      # habitación  =>  rooms
+      calefacción individual  =>  heating_scope
+      calefacción individual: bomba de frío/calor  =>  heating_type
+      orientación sur  =>  orientation
+      calefacción individual: gas natural  =>  heating_type
+      bajo exterior  =>  floor
+      orientación sur, este  =>  orientation
+      promoción de obra nueva  =>  condition
+      calefacción central  =>  heating_scope
+      orientación este, oeste  =>  orientation
+      alquilada, con inquilinos  =>  is_tenant_occupied
+      orientación oeste  =>  orientation
+      acceso y vivienda adaptados para personas con movilidad reducida  =>  unread
+      orientación norte  =>  orientation
+      cocina equipada y casa sin amueblar  =>  furnishing
+      chalet adosado  =>  property_type
+      exterior  =>  is_exterior
+      #ª planta interior  =>  floor
+      sin habitación  =>  rooms
+      orientación norte, sur, este, oeste  =>  orientation
+      orientación norte, este  =>  orientation
+      calefacción central: gas  =>  heating_type
+      # planta  =>  storeys
+      orientación norte, sur  =>  orientation
+      plaza de garaje por # € adicionales  =>  unread
+      orientación sur, oeste  =>  orientation
+      en trámite  =>  unread
+      #ª planta  =>  floor
+      cocina sin equipar y casa sin amueblar  =>  furnishing
+      orientación norte, oeste  =>  orientation
+      chalet pareado  =>  property_type
+      casa o chalet  =>  property_type
+      solo interior de la vivienda adaptado para personas con movilidad reducida  =>  unread
+      ocupada ilegalmente qué se considera una vivienda ocupada  =>  is_occupied
+      orientación sur, este, oeste  =>  orientation
+      plaza de garaje por # €/mes adicionales  =>  unread
+      no indicado  =>  unread
+      bajo interior  =>  floor
+      entreplanta exterior  =>  floor
+      sin baños  =>  bathrooms
+      casa de pueblo  =>  property_type
+      orientación norte, sur, este  =>  orientation
+      calefacción central: gasoil  =>  heating_type
+      orientación norte, este, oeste  =>  orientation
+      nuda propiedad qué es la nuda propiedad  =>  is_bare_ownership
+      finca rústica  =>  property_type
+      calefacción individual: gas propano/butano  =>  heating_type
+      chimenea  =>  unread
+      orientación norte, sur, oeste  =>  orientation
+      interior  =>  is_exterior
+      bajo  =>  floor
+      casa rural  =>  property_type
+      masía  =>  property_type
+      entreplanta interior  =>  floor
+      caserón  =>  property_type
+      planta -# exterior  =>  floor
+      semi-sótano exterior  =>  floor
+      casa terrera  =>  property_type
+      entreplanta  =>  floor
+      casa rústica  =>  property_type
+      no dispone de calefacción: eléctrica  =>  has_heating
+      semi-sótano interior  =>  floor
+      segunda mano/  =>  condition
+      calefacción individual: gas  =>  heating_type
+      cortijo  =>  property_type
+      sótano exterior  =>  floor
+      planta -# interior  =>  floor
+
+  # SHA-256 of a wording  =>  target. One wording, on 1,364 listings: it says that the property
+  # is exempt from the energy certificate.
+  registry_digests: |
+      b2c7da2bbba335a16fc4dca108d834f6ce1485738f233cad6ff526e89c6cd3e9  =>  unread
+
+  # wording  =>  furnishing value.
+  furnishing_values: |
+      amueblado y cocina equipada  =>  furnished
+      cocina equipada y casa sin amueblar  =>  kitchen_only
+      cocina sin equipar y casa sin amueblar  =>  unfurnished
+
+  tasks:
+    - id: "1.1"
+      title: "The registry and the normalisation"
+      description: |
+        Create src/silver/sql/feature_wording.sql (the macro of the conventions) and
+        src/silver/feature_patterns.py as the conventions describe it, with the entries of
+        `registry`, `registry_digests` and `furnishing_values` copied unchanged. In
+        src/silver/rebuild.py, _prepare() calls register_feature_registry(connection).
+        feature_patterns.py does not import src.silver.rebuild.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: []
+      branch: "feature/feature-labels/1.1-registry"
+      commit_message: "feat(silver): registry of feature wordings and their normalisation"
+      acceptance_criteria:
+        - "feature_wording gives one wording for two features that differ only in a number, also a decimal one with a comma, and trims and lower-cases"
+        - "Every key of KNOWN_PATTERNS equals feature_wording of itself, computed in DuckDB"
+        - "registry_rows() has 100 rows with 100 distinct digests: 99 computed and 1 listed"
+        - "Every target is a listing_detail column of the landing v3 contract, a label target or UNREAD"
+        - "The wordings with the target furnishing are exactly the keys of FURNISHING_VALUES, and label_value is null for every other row"
+        - "DuckDB's sha256 of a wording with non-ASCII characters equals its pattern_sha256"
+        - "After build_tables or any rule function the session holds feature_registry with 100 rows"
+        - "The leak guard passes and the existing suite is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_silver_feature_registry.py"
+          change: "New file with the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_feature_registry -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.feature_patterns'"
+        green:
+          change: "The macro file, the module and the call in _prepare()."
+          command: "python -m unittest tests.test_silver_feature_registry -v"
+        refactor:
+          change: "The module docstring says how to add a wording and when to list one by digest; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/feature_patterns.py"
+        - "src/silver/sql/feature_wording.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_feature_registry.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "dev/tools/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/feature_patterns.py"
+        - "src/silver/sql/feature_wording.sql"
+        - "tests/test_silver_feature_registry.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "1.2"
+      title: "The pattern table"
+      description: |
+        Create src/silver/sql/feature_pattern.sql and feature_patterns(connection, listing,
+        listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement gives the table
+        of the conventions. Do not add the table to SILVER_TABLES yet.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.1"]
+      branch: "feature/feature-labels/1.2-pattern-table"
+      commit_message: "feat(silver): one row per feature wording with its target and its gaps"
+      acceptance_criteria:
+        - "Two listings whose features differ only in a number give one row with listings 2"
+        - "A listing that carries one wording twice counts once"
+        - "A wording of the registry carries its target; an invented one has a null target and a null listings_target_missing"
+        - "listings_target_missing counts the listings whose target column is null, 'unknown' or an empty list, and is 0 when every listing has the value"
+        - "It is null for a wording whose target is a label or UNREAD"
+        - "A listing with a text row and no row in listing counts as missing its target"
+        - "Rows are ordered by listings descending, then pattern; the five columns are in order with transformation_version silver-v1"
+      tdd:
+        red:
+          test_file: "tests/test_silver_feature_pattern.py"
+          change: |
+            New file with helpers that build Arrow tables of listing rows (key columns plus the
+            few attribute columns a case needs) and of text rows with features.
+          command: "python -m unittest tests.test_silver_feature_pattern -v"
+          expected_failure: "ImportError: cannot import name 'feature_patterns' from 'src.silver.rebuild'"
+        green:
+          change: "The statement and the function."
+          command: "python -m unittest tests.test_silver_feature_pattern -v"
+        refactor:
+          change: "The header comment states what a wording, a target and a missing target are; counts are cast to INTEGER."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/feature_pattern.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_feature_pattern.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/feature_patterns.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/feature_pattern.sql"
+        - "tests/test_silver_feature_pattern.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.1"
+      title: "Sale labels: tenant and bare ownership"
+      description: |
+        Create src/silver/sql/listing_feature_label.sql and listing_feature_labels(connection,
+        listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement returns the
+        columns of the conventions except furnishing. A label is true when one of the listing's
+        wordings has that label as its registry target.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["1.2"]
+      branch: "feature/feature-labels/2.1-sale-labels"
+      commit_message: "feat(silver): tenant-occupied and bare-ownership labels from features"
+      acceptance_criteria:
+        - "A listing with the tenant wording is tenant-occupied and not bare ownership, and the reverse for the bare-ownership wording"
+        - "A listing with neither has false for both, never null"
+        - "A listing with an empty feature list has a row with false for both"
+        - "One row per text row, ordered by source, source_listing_id, with transformation_version silver-v1"
+      tdd:
+        red:
+          test_file: "tests/test_silver_feature_label.py"
+          change: "New file with a helper that builds text rows with features and the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_feature_label -v"
+          expected_failure: "ImportError: cannot import name 'listing_feature_labels' from 'src.silver.rebuild'"
+        green:
+          change: "The statement and the function."
+          command: "python -m unittest tests.test_silver_feature_label -v"
+        refactor:
+          change: "The header comment says that a label is the portal's statement, not a verified fact."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_feature_label.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_feature_label.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/feature_patterns.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_feature_label.sql"
+        - "tests/test_silver_feature_label.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.2"
+      title: "Furnishing"
+      description: |
+        Add furnishing to the statement, in the column order of the conventions: the
+        label_value of the listing's furnishing wording, null without one and null when its
+        wordings give two different values.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.1"]
+      branch: "feature/feature-labels/2.2-furnishing"
+      commit_message: "feat(silver): furnishing label from features"
+      acceptance_criteria:
+        - "Each of the three wordings gives its value"
+        - "No furnishing wording gives null; two wordings with different values give null"
+        - "The table has the six columns of the conventions in order"
+      tdd:
+        red:
+          test_file: "tests/test_silver_feature_label.py"
+          change: "Add the cases of the acceptance criteria and an assertion on the column names."
+          command: "python -m unittest tests.test_silver_feature_label -v"
+          expected_failure: "KeyError: 'furnishing' and a column-name mismatch"
+        green:
+          change: "One aggregate over the listing's furnishing values."
+          command: "python -m unittest tests.test_silver_feature_label -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_feature_label.sql"
+        - "tests/test_silver_feature_label.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_feature_label.sql"
+        - "tests/test_silver_feature_label.py"
+
+    - id: "3.1"
+      title: "Every run writes both tables"
+      description: |
+        In src/silver/rebuild.py: feature_pattern and listing_feature_label join SILVER_TABLES
+        directly after listing_text. The helper that reads Silver's listing for the label rules
+        reads the whole table once, and listing_text with source, source_listing_id and
+        features, before any rule runs; it passes each rule its columns and returns the two new
+        tables with the existing ones for the one write_silver_tables call. Update the comment
+        above the call: a run can change any listing's features and with them the counts of
+        any wording.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["2.2"]
+      branch: "feature/feature-labels/3.1-run-writes-the-tables"
+      commit_message: "feat(silver): recompute feature_pattern and listing_feature_label in every run"
+      acceptance_criteria:
+        - "A backfill of the synthetic landing writes both tables equal to build_tables over every run"
+        - "Commits processed one at a time and three at a time give the rows of a backfill"
+        - "A catalog whose two tables were dropped gains them with the next run, equal to a backfill, and no other table's schema changes"
+        - "A run with nothing pending writes no snapshot of either table"
+        - "listing_quality and listing_property_group rows are unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            Add test_tables_that_predate_the_feature_tables_gain_them_equal_to_a_backfill after
+            the pattern of the listing_price one, dropping both tables. The tests that enumerate
+            the written tables cover the rest once the names are in the tuple.
+          command: "python -m unittest tests.test_silver_incremental -v"
+          expected_failure: "pyiceberg NoSuchTableError for the table feature_pattern"
+        green:
+          change: "The tuple entries, the two reads and the two tables in the write call."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_quality -v"
+        refactor:
+          change: "None beyond the comment."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "3.2"
+      title: "Synthetic wordings, the report and the metric"
+      description: |
+        src/synthetic/landing.py: _detail() gains the keyword features, a sequence of strings,
+        with the default ("80 m² construidos", "3 habitaciones"), both wordings of the registry.
+        One scenario function, registered in generate_landing_v3, adds three sale listings with
+        a card and a detail record and no coordinates, so that none pairs under rule pg1:
+        syn-furnished with the feature "Amueblado y cocina equipada", syn-tenant with
+        "Alquilada, con inquilinos", and syn-novel-feature with "Vistas al mar desde 2
+        miradores", which is in no registry.
+        src/silver/rebuild.py: ProcessResult gains unknown_feature_patterns (int); _report
+        prints `feature_pattern: snapshot <id>` and `listing_feature_label: snapshot <id>` after
+        the listing_price line and then `unknown feature patterns: <n>`; with --metrics a run
+        that processed something publishes UnknownFeaturePatterns beside PendingRuns in the same
+        call, and a run with nothing pending publishes PendingRuns alone.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["3.1"]
+      branch: "feature/feature-labels/3.2-scenario-report-metric"
+      commit_message: "feat(silver): synthetic feature wordings, the report line and the metric for unknown ones"
+      acceptance_criteria:
+        - "The synthetic landing holds the three listings with their features"
+        - "After a backfill syn-furnished has furnishing furnished, syn-tenant is tenant-occupied, and feature_pattern has exactly one row with a null target"
+        - "An incremental run and a backfill each print the two snapshot lines and `unknown feature patterns: 1`"
+        - "With --metrics the fake client receives PendingRuns 0 and UnknownFeaturePatterns 1 in one call; a second run with nothing pending sends PendingRuns alone"
+        - "Every other test of the suite passes without a changed expectation, or the changed expectation is a count that the new listings raise"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            tests/test_silver_incremental.py: a test reading both tables after a backfill.
+            tests/test_synthetic_landing.py: the three listings are present with their features.
+            tests/test_silver_cli.py: the three report lines, and the metrics test expects both
+            metrics.
+          command: "python -m unittest tests.test_silver_incremental tests.test_synthetic_landing tests.test_silver_cli -v"
+          expected_failure: "AssertionError: no row of syn-furnished, the regular expressions do not match, and the metric list lacks UnknownFeaturePatterns"
+        green:
+          change: "The keyword, the scenario and its registration; the result field, the report lines and the metric."
+          command: "python -m unittest tests.test_silver_incremental tests.test_synthetic_landing tests.test_silver_cli -v"
+        refactor:
+          change: "The scenario's comment says what each listing is for."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_synthetic_landing.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+        - "src/silver/feature_patterns.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_synthetic_landing.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "4.1"
+      title: "The alarm for unknown wordings"
+      description: |
+        infra/silver/alerts.tf: one aws_cloudwatch_metric_alarm after the pattern of the
+        PendingRuns alarm: metric UnknownFeaturePatterns in the same namespace, statistic
+        Maximum, period 3600, one evaluation period, GreaterThanThreshold 0, treat_missing_data
+        "ignore", alarm action the existing topic. Its description says: a feature wording is
+        not in the registry; read feature_pattern for rows with a null target and add them to
+        src/silver/feature_patterns.py. Nothing is applied in this task.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["3.2"]
+      branch: "feature/feature-labels/4.1-alarm"
+      commit_message: "feat(infra): alarm when a feature wording is not in the registry"
+      acceptance_criteria:
+        - "terraform fmt -check and validate pass"
+        - "The alarm ignores missing data and names the existing topic"
+        - "No other resource changes"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "infra/silver/alerts.tf"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/silver/*.tfvars"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "infra/silver/alerts.tf"
+
+    - id: "4.2"
+      title: "Runbook and README"
+      description: |
+        docs/silver-rebuild.md: both tables join "The tables", each with a section of its own.
+        feature_pattern: what a wording is, the columns, what a null target means and how to add
+        a wording to the registry (and when to list it by digest), what listings_target_missing
+        shows and that its repair belongs to the acquisition side, and that the table is private
+        because a new wording could be typed text. listing_feature_label: the columns, that a
+        label is the portal's statement and not a verified fact, and that furnishing is null
+        when no wording states it. The report lines join the example output, the tables the
+        incremental-mode description, and the alarm the alarms section with what to do when it
+        mails. The cost section gains the metric and the alarm. README.md: the status text
+        counts two more Iceberg tables and names the feature labels.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["4.1"]
+      branch: "feature/feature-labels/4.2-docs"
+      commit_message: "docs(silver): describe feature_pattern and listing_feature_label"
+      acceptance_criteria:
+        - "The runbook states both tables, the registry procedure, the reading and the alarm"
+        - "The README counts the Silver tables correctly"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+
+    - id: "4.3"
+      title: "Deployment, first real run and implementation note (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR. Every
+        AWS action needs explicit user approval in chat.
+        1. Wait for the image of the merge commit; set silver_image in the gitignored tfvars;
+           terraform plan and apply in infra/silver. Only the new alarm and a new task
+           definition revision may change.
+        2. Let the next landing commit or the catch-up start a task. No backfill. From the task
+           log take the two snapshot ids, the count of unknown wordings and the duration, and
+           compare it with the durations recorded for FEATURE-009.
+        3. In Athena, privately and as counts only, with the same rule written in Athena SQL:
+           wordings (100 expected) and unknown ones (0); listings per label (1,157 tenant, 71
+           bare ownership; furnishing 4,488, 834 and 391 on the snapshot of 2026-11-16, moved by
+           the days since); label rows equal to text rows; no null boolean.
+        4. Write dev/plans/implementations/FEATURE-010-feature-labels.md with those counts, the
+           durations, and a table for the acquisition side: every wording with the target unread
+           and every wording whose listings_target_missing is above zero, with its counts. The
+           wording that is listed by digest appears there by its target and count only. Set the
+           feature plan to complete, tick its success criteria, add the progress-log entry and
+           update the registry row.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["4.2"]
+      branch: "feature/feature-labels/4.3-first-run-record"
+      commit_message: "docs(plans): FEATURE-010 first run, label counts and unread wordings"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0, prints both snapshots and `unknown feature patterns: 0`"
+        - "The counts of both tables equal the Athena implementation of the rule on the same run's tables"
+        - "The alarm exists and is in the state OK"
+        - "The note holds counts and wordings of the registry only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-010-feature-labels.md"
+        - "dev/plans/FEATURE-010-feature-labels.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-010-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous tag and apply; drop the two Silver tables; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-010-feature-labels.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-010-feature-labels.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-010-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/feature-labels/integration"
+    task_branch_strategy: |
+      Create the integration branch from main after the final PR of FEATURE-009 is merged and
+      main holds this feature's plan, review and technical plan. Task 1.1 starts from the
+      integration branch; each later task up to 4.2 starts from the integration branch after its
+      predecessor is merged. The tasks share rebuild.py and the statements, so none runs in
+      parallel. Task 4.3 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 4.2, never rewriting history,
+      and run validation.final_commands there. The final PR goes from the integration branch to
+      main. Task 4.3's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): labels from listing features and a check for unread wordings"
+    final_pr_description: |
+      Implements FEATURE-010: Silver gains listing_feature_label (tenant-occupied, bare
+      ownership, furnishing) and feature_pattern (every feature wording with the column that
+      carries it), recomputed whole in every run, with a metric and an alarm for wordings that
+      are not in the registry. See dev/reviews/REVIEW-FEATURE-010.md (approved). Nothing is
+      applied by this PR; task 4.3 deploys with approval.
+
+  notes:
+    - "One wording is listed by its SHA-256 digest because the leak guard refuses one of its words. Never write it in clear in the repository, and never change dev/tools/ to make a wording pass."
+    - "Never print, log or commit a real listing id or a feature string that is not in the registry; an unknown wording could be typed text. Reports are counts."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image changes, by the operator, in task 4.3."
+    - "regexp_replace needs the 'g' option in DuckDB. The Athena rule of task 4.3 replaces every match by default."
+    - "Read Silver's listing and listing_text for the label rules before any rule function is called: listing_quality() and the feature functions replace the temporary table silver_listing with their own columns."
+    - "The three synthetic listings must not get coordinates: with them they would pair under rule pg1 with each other."
+    - "FEATURE-011 and FEATURE-012 change process_landing too and start after this feature is merged."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
