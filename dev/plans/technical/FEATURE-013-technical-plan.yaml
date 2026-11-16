@@ -148,7 +148,7 @@ technical_plan:
         and writes it on every row; it takes neither a snapshot id nor a build time. Create
         tests/test_silver_property_groups.py from tests/test_gold_property_groups.py with the
         Silver schema.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.1"]
