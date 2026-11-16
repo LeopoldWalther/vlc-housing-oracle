@@ -24,6 +24,7 @@ from pyiceberg.expressions import In
 from src.contracts import landing_v3_sha256
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
+from src.silver.feature_patterns import register_feature_registry
 from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
@@ -513,6 +514,7 @@ def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     for name, value in QUALITY_THRESHOLDS.items():
         connection.execute(f"SET VARIABLE {name} = {value}::BIGINT")
     connection.execute(_statement("redact"))
+    register_feature_registry(connection)
 
 
 def _statement(name: str) -> str:
