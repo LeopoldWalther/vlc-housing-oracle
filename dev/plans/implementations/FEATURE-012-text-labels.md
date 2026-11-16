@@ -47,8 +47,8 @@ What this means for the gate of task 1.6: the evaluation measures the cheap mode
 with a stronger model's careful reading, not with a human. Agreement may be somewhat
 higher than against human labels, because both readers are language models of one family. The
 borderline flags are kept beside the set, so the result can also be read without those 45 texts.
-The mailed workbook remains with the user; a human check of a part of the set stays possible and
-would replace these labels for the texts it covers.
+The user declined a human check of the set on 2026-11-16. After the paid evaluation (task 1.6)
+the user may be shown the texts where the model and these labels disagree, and only those.
 
 ### Labels
 

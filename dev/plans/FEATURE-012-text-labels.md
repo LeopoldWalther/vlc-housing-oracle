@@ -280,7 +280,8 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 
 - **Answered (user, 2026-11-16):** the user labels the 200 texts by hand, from a file sent
     by mail. **Changed the same day:** the user handed the labelling to the assistant, so no
-    human labelled the set; see the implementation note for what that means for the gate.
+    human labelled the set; see the implementation note for what that means for the gate. The
+    user declined a human check of it.
 - **Question (user, before 1.3 and 4.3):** approve each paid run and its upper bound.
 - **Question (user, after 1.3, only if a label fails):** drop the label, or use a larger model
     for it.
