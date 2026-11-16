@@ -1,6 +1,6 @@
 # FEATURE-012 — Labels read from the description by a language model
 
-**Status:** 🔵 Planned · **Effort:** L (~16h) · **Priority:** Medium
+**Status:** 🔵 Planned · **Effort:** L (~20h) · **Priority:** Medium
 **Branch root:** `feature/text-labels` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-012.md`).
@@ -16,9 +16,10 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
 ## Context
 
 - **Current state:**
-    - `listing_text` holds the redacted title and description of every listing with a detail
-        record (redaction `r2`).
-    - `listing.condition` has three values. Every Silver table is a pure DuckDB transformation
+    - `listing_text` holds the title and the redacted description of every listing with a
+        detail record (redaction `r2`). The title is verbatim and usually names a street.
+    - `listing.condition` has three values (`good` 13,892, `needs_renovation` 2,069, `new`
+        1,233 of the 17,236 sale listings; 42 have none). Every Silver table is a pure DuckDB transformation
         of landing; nothing in the repository calls a model.
 - **Problem** (aggregate counts on Silver of 2026-11-15, by keyword search):
     - `condition` is `good` for 13,892 of 17,236 sale listings. The text calls 2,440 of them
@@ -33,7 +34,8 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
         own account; the redacted text may be sent to it; the first plan at about $26 a month
         was too expensive, so the model is Claude Haiku 5.5 through Bedrock's global inference
         profile, which may process the text outside the EU.
-    - Only redacted text leaves Silver, and no listing identifier with it.
+    - Only the redacted description leaves Silver: no title, no location and no listing
+        identifier with it (review M2).
     - A model's answer is not reproducible, so it must not be recomputed by a Silver run.
     - Tests never call a model.
 
@@ -85,9 +87,10 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
 
 - **Primary approach.** Two halves, shaped like acquisition and Silver:
     - **The labeller** is a command, `python -m src.enrichment.text_labels`. It reads Silver's
-        `listing_text` for sale listings, hashes each redacted title and description (SHA-256),
-        and takes the hashes that have no stored answer under the current `label_version`: a set difference,
-        like the ingest log. For each it makes one request and writes the answers in parts of a
+        `listing_text` for sale listings, hashes each non-empty redacted description (SHA-256
+        of its UTF-8 bytes, lower-case hex), and takes the hashes that have no stored answer
+        under the current `label_version`: a set difference, like the ingest log. Requests are
+        made one after another. For each it makes one request and writes the answers in parts of a
         few hundred rows to
         `enrichment/v1/text_label/label_version=<v>/run=<run_id>/part-<n>.parquet`. Parts are
         written once and never replaced; a crash loses at most one part.
@@ -95,8 +98,11 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
         answers by hash and replaces `listing_text_label` whole. Silver remains a pure function
         of landing and the stored answers.
 - **Deployment.**
-    - The labeller runs as a second ECS task definition on the existing cluster and image,
-        started by an EventBridge rule when a Silver task stops with exit code 0.
+    - The labeller runs as a second ECS task definition on the existing cluster and image
+        (the image's entry point is Silver's, so the definition overrides it), started by an
+        EventBridge rule when a task of the Silver task definition stops with exit code 0. The
+        rule names that definition: a rule on the cluster alone would let a finished labeller
+        start the next one without end (review M5).
     - Its role may read Silver, write the enrichment prefix and invoke the chosen inference
         profile. The model id and the per-run cap are task arguments.
     - New answers reach `listing_text_label` with the next Silver run, a few hours later.
@@ -107,10 +113,31 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
     - `listing_text_label`: one row per listing with a text row; the two labels (null until
         the text is labelled, and always null for a listing that is not a sale),
         `label_version`, `model_id`, `labeled_at`, `transformation_version`.
-    - `label_version` names the prompt and the schema. A new version labels every text again
-        and leaves the old answers in place.
+    - `label_version` names the prompt, the schema and the model. A new version labels every
+        text again and leaves the old answers in place. A run refuses to write when stored
+        answers of its `label_version` carry another `model_id`.
+    - Silver computes the hash with DuckDB's `sha256` and the labeller with the same function;
+        a test pins both to Python's `hashlib` on a text with non-ASCII characters.
+    - A Silver run with `--text-labels` and no stored part writes the table with null labels.
+        A listing with an empty description is never sent and keeps null labels.
+    - Two labeller runs at the same time may label one text twice; Silver takes the newest
+        answer of the current version, and the cap bounds the cost.
     - An answer outside the schema is counted and not stored; the text stays pending.
     - No text and no listing id is written to a log.
+- **Label definitions** (the same wording for the hand labels and the prompt):
+    - `renovation_state` is what the description says about the home as a whole, decided in
+        this order:
+        1. `needs_renovation`: it needs works or is sold to be renovated ("para reformar",
+            "a reformar", "necesita reforma", "para actualizar");
+        2. `new_build`: new construction, never lived in;
+        3. `renovated`: renovated as a whole, or recently ("reformado", "reforma integral",
+            "recién reformado", "a estrenar tras reforma");
+        4. `original`: habitable as it is, with no whole renovation stated; a renewed kitchen
+            or bathroom alone, "buen estado" and "para entrar a vivir" belong here;
+        5. `unknown`: the description says nothing about the state.
+    - `is_auction` is true when the home is acquired through an auction or the assignment of
+        an auction award ("subasta", "puja", "cesión de remate"), and false otherwise, also
+        when the text says it is not an auction.
 - **OOP / SOLID:** one protocol, `TextLabeler`, with a Bedrock implementation and a fake for
     tests. The model is a paid external boundary, which is what justifies the interface.
 - **Patterns:** none beyond that injected dependency.
@@ -127,34 +154,42 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
 
 ### Phase 1 — Is the cheap model good enough (gated by approval)
 
-- [ ] **1.1 ADR 0005 and prices.** The decision and layout; the current Bedrock price of the
-    model.
-- [ ] **1.2 Evaluation set.** A private sample of 200 sale texts, stratified by `condition` and
-    by the keyword hits, labelled by hand and stored outside the repository.
-- [ ] **1.3 Evaluation.** RED: `python -m src.enrichment.evaluate` with a fake labeller prints
-    agreement per label and value. Then, with approval, one run with Claude Haiku 5.5 (about
-    six cents). A label is kept if its decisive values (`renovated`, `needs_renovation`,
-    `is_auction`) reach a precision of 0.90 and a recall of 0.80. If one fails, the user decides
-    between dropping the label and a larger model for it. Recorded as counts.
+- [ ] **1.1 ADR 0005.** The decision and the layout.
+- [ ] **1.2 Evaluation set (user and operator).** A private sample of 200 distinct sale
+    descriptions in eight strata of `condition` and keyword hits, labelled by the user by hand
+    from a file sent by mail, and stored outside the repository with each stratum's population.
+- [ ] **1.3 Answer, prompt and validation.** RED: an answer inside the schema becomes a label;
+    one outside it is refused.
+- [ ] **1.4 The Bedrock labeller.** RED against a stubbed client: the request carries the
+    prompt, the description, the schema and an explicit output limit; throttling is retried a
+    bounded number of times. No test calls the service.
+- [ ] **1.5 The evaluation command.** RED: `python -m src.enrichment.evaluate` with a fake
+    labeller prints, per decisive value, counts and precision and recall, raw and weighted by
+    the strata's populations, and the tokens used; no text is printed.
+- [ ] **1.6 Paid evaluation and gate (operator, with approval).** The current Bedrock price,
+    then one run with Claude Haiku 5.5 (about six cents). A label is kept if its decisive
+    values (`renovated`, `needs_renovation`, `is_auction`) reach a weighted precision of 0.90
+    and a weighted recall of 0.80. If one fails, the user decides between dropping the label
+    and a larger model for it. Recorded as counts.
 
 ### Phase 2 — The labeller
 
 - [ ] **2.1 Pending texts.** RED: sale texts without an answer are pending and rent texts never
-    are; identical texts are one; an answer under an older `label_version` does not count.
+    are; identical texts are one; an empty description is never pending; an answer under an
+    older `label_version` does not count.
 - [ ] **2.2 One run.** RED: with a fake labeller a run stores one answer per pending text in
     parts, stops at the cap, and a second run labels nothing twice; an invalid answer is
-    counted and left pending; a failing request after the retries leaves earlier parts in place.
-- [ ] **2.3 The Bedrock labeller.** RED against a stubbed client: the request carries the
-    prompt, the text, the schema and an explicit output limit; throttling is retried. No test
-    calls the service.
+    counted and left pending; a failing request after the retries leaves earlier parts in
+    place; stored answers of another model under the same `label_version` are refused.
 
 ### Phase 3 — Silver
 
 - [ ] **3.1 The table.** RED: a listing whose text has an answer carries it; one without has
     nulls; a rent listing has nulls even when its text has an answer; of two answers for one
-    hash the newest of the current version wins.
-- [ ] **3.2 Pipeline.** RED: with the argument the run writes the table; without it none;
-    stepwise commits equal a backfill over the same stored answers.
+    hash the newest of the current version wins; the hash equals `hashlib`'s.
+- [ ] **3.2 Pipeline.** RED: with the argument the run writes the table, also when no part is
+    stored yet; without it none; stepwise commits equal a backfill over the same stored
+    answers.
 
 ### Phase 4 — Operation
 
@@ -163,18 +198,24 @@ answers are stored as immutable inputs, so Silver stays reproducible and a backf
 - [ ] **4.2 Documentation.** Runbook: the flow, the cap, a new `label_version`, the cost.
 - [ ] **4.3 Backlog and first runs (operator, with approval).** Label the backlog under the
     cap, then counts only: texts labelled, tokens, cost, label distribution, and agreement with
-    the keyword counts above. Recorded in
+    the keyword counts above. The user reads the texts the model calls an auction although
+    they do not contain the keyword, at most 30, and the share that are auctions is recorded:
+    the evaluation set is too small to prove the precision of a label this rare (review M3). Recorded in
     `dev/plans/implementations/FEATURE-012-text-labels.md`.
 
 ## Files
 
 - **Create:** `docs/adr/0005-model-derived-labels.md`, `src/enrichment/__init__.py`,
-    `src/enrichment/text_labels.py`, `src/enrichment/bedrock.py`, `src/enrichment/evaluate.py`,
-    `src/enrichment/prompt.py`, `src/silver/sql/listing_text_label.sql`, `infra/silver/labels.tf`.
+    `src/enrichment/labeler.py`, `src/enrichment/prompt.py`, `src/enrichment/bedrock.py`,
+    `src/enrichment/evaluate.py`, `src/enrichment/text_labels.py`,
+    `src/enrichment/sql/pending_text.sql`, `src/silver/sql/listing_text_label.sql`,
+    `infra/silver/labels.tf`.
 - **Change:** `src/silver/rebuild.py`, `requirements.txt` (`boto3` pinned as a direct
-    dependency), `src/synthetic/landing.py`, `docs/silver-rebuild.md`, `README.md`, `CLAUDE.md`.
-- **Tests:** `tests/test_enrichment_text_labels.py`, `tests/test_enrichment_bedrock.py`,
-    `tests/test_enrichment_evaluate.py`, `tests/test_silver_listing_text_label.py` (new),
+    dependency), `infra/silver/ecs.tf`, `infra/silver/variables.tf`, `docs/silver-rebuild.md`,
+    `README.md`, `CLAUDE.md`. The `Dockerfile` copies `src/` whole and stays as it is.
+- **Tests:** `tests/test_enrichment_labeler.py`, `tests/test_enrichment_bedrock.py`,
+    `tests/test_enrichment_evaluate.py`, `tests/test_enrichment_text_labels.py`,
+    `tests/test_silver_listing_text_label.py` (new), `tests/test_silver_incremental.py`,
     `tests/test_silver_cli.py`.
 
 ## Test strategy
@@ -227,7 +268,8 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 
 - [ ] The evaluation is recorded, and each kept label met its threshold with the chosen model.
 - [ ] Every listing with a text row has one row in `listing_text_label`.
-- [ ] No text is labelled twice under one `label_version`, and a run never exceeds its cap.
+- [ ] A repeated run labels no text twice under one `label_version`, and a run never exceeds
+    its cap.
 - [ ] A Silver backfill makes no model request and reproduces the table.
 - [ ] Every behavior was implemented test-first and focused plus affected suites pass
 - [ ] Configured lint, format, leak, infrastructure and workflow checks pass
@@ -236,7 +278,8 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 
 ## Open questions & risks
 
-- **Question (user, before 1.2):** who labels the 200 texts by hand, and when?
+- **Answered (user, 2026-11-16):** the user labels the 200 texts by hand, from a file sent
+    by mail.
 - **Question (user, before 1.3 and 4.3):** approve each paid run and its upper bound.
 - **Question (user, after 1.3, only if a label fails):** drop the label, or use a larger model
     for it.
@@ -254,3 +297,8 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 - **2026-11-16** — Made cheaper after the user's objection to about $26 a month: Claude Haiku
     5.5 through the global profile, sale texts only, about $1 a month. The rental term left the
     feature, because stored pages show that the page states it.
+- **2026-11-16** — Reviewed and approved. Corrections folded in: the evaluation needs the model
+    call, so the prompt, the Bedrock labeller and the evaluation command move into phase 1;
+    only the description is hashed and sent; label definitions; precision and recall weighted
+    by the strata; the start rule names the Silver task definition; the model belongs to
+    `label_version`. The user labels the evaluation set.

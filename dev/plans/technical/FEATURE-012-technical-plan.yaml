@@ -1,0 +1,939 @@
+# Technical plan for FEATURE-012 — Labels read from the description by a language model.
+# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1 to M6,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+# Phases 1 and 2 create new files only. Phase 3 starts after FEATURE-009, FEATURE-010 and
+# FEATURE-011 are merged to main.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-012"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-16"
+    version: "1.0"
+    total_tasks: 14
+    estimated_hours: "20"
+    risk_level: "medium"
+    critical_path: ["1.1", "1.3", "1.4", "1.5", "1.6", "2.1", "2.2", "2.3", "3.1", "3.2", "4.1", "4.2", "4.3"]
+    feature_plan: "dev/plans/FEATURE-012-text-labels.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-012.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "terraform-validate"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - Only the redacted description of a sale listing is hashed and sent: never the title, the
+      location, the features or a listing identifier (review M2). An empty description (null, or
+      nothing but white space) is never hashed, sent or stored.
+    - text_sha256 is DuckDB's sha256(description): the SHA-256 of the UTF-8 bytes as lower-case
+      hex. Both the labeller and Silver compute it in SQL; a test pins it to Python's hashlib.
+    - Label values. renovation_state is one of new_build, renovated, original,
+      needs_renovation, unknown; is_auction is a boolean. The definitions and their decision
+      order are those of the feature plan's "Label definitions" and go word for word into
+      SYSTEM_PROMPT.
+    - src/enrichment/labeler.py holds the domain types and nothing that knows a service:
+        RENOVATION_STATES                       the five values, in the order above
+        TextLabel(renovation_state, is_auction) frozen dataclass
+        LabelResult(label, input_tokens, output_tokens)
+                                                frozen dataclass; label is None for an answer
+                                                outside the schema
+        TextLabeler                             Protocol with label(description: str) -> LabelResult
+        label_from_answer(answer) -> TextLabel | None
+                                                None unless answer is a mapping with exactly
+                                                the keys renovation_state (one of the five
+                                                values) and is_auction (a bool, not 0 or 1)
+    - src/enrichment/prompt.py holds LABEL_VERSION = "tl1", SYSTEM_PROMPT, ANSWER_TOOL_NAME and
+      ANSWER_SCHEMA (the JSON schema of the answer). LABEL_VERSION names the prompt, the schema
+      and the model: a change of any of the three is a new value, never an edit.
+    - A stored answer has these columns, in order, with Arrow types (ANSWER_SCHEMA_ARROW in
+      src/enrichment/text_labels.py):
+        text_sha256        string
+        label_version      string
+        model_id           string
+        renovation_state   string
+        is_auction         bool
+        labeled_at         timestamp(us, UTC)
+        input_tokens       int32
+        output_tokens      int32
+    - Stored answers live under <labels>/label_version=<v>/run=<run_id>/part-<n>.parquet, where
+      <labels> is a directory or an s3:// location, run_id is the run's UTC start as
+      YYYYMMDDTHHMMSSZ and n counts from 0. A part holds at most PART_ROWS = 200 answers, is
+      written once and never replaced. The partition values are also columns of the file; a
+      reader does not rely on hive partitioning.
+    - The private evaluation set is a CSV file outside the repository with the columns number,
+      stratum, stratum_population, description, renovation_state, is_auction (true or false).
+      It is passed by path and never copied into the repository, a fixture or a log.
+    - The Silver table listing_text_label: one row per row of listing_text, ordered by source,
+      source_listing_id. Columns, in order, with Arrow types:
+        source                   string
+        source_listing_id        string
+        renovation_state         string     null until the text is labelled, and for every
+                                            listing that is not a sale
+        is_auction               bool       as renovation_state
+        label_version            string     null with the labels
+        model_id                 string     null with the labels
+        labeled_at               timestamp(us, UTC)   null with the labels
+        transformation_version   string
+      Of several stored answers for one text_sha256 under LABEL_VERSION the one with the newest
+      labeled_at wins; answers of another label_version are ignored.
+    - TEXT_LABEL_TABLE = "listing_text_label" is a constant of src/silver/rebuild.py and is not
+      a member of SILVER_TABLES: it exists only for a run given --text-labels.
+    - No text, no hash and no listing identifier is printed or logged by any command; reports
+      are counts.
+    - No test calls a model or a cloud service. The Bedrock labeller is tested with
+      botocore.stub.Stubber on a client built with dummy credentials and a fixed region.
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - Tests use synthetic values only (source "syn", invented texts) and compare results as
+      Arrow rows (to_pylist()).
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "ADR 0005 and the architecture note"
+      description: |
+        docs/adr/0005-model-derived-labels.md after the form of ADR 0003: context (a model's
+        answer is not reproducible; Silver must be), decision (answers are immutable inputs
+        under enrichment/v1/text_label/, keyed by text_sha256 and label_version, written by this
+        repository's own command and read by Silver; one call per text; only the redacted
+        description leaves Silver), consequences (a new label_version relabels everything; a
+        backfill costs nothing; a second input beside landing; processing may happen outside the
+        EU by the user's decision of 2026-11-16) and rejected alternatives (a model call inside
+        the Silver run; the labeller writing the Silver table; an agent runtime; batch
+        inference). CLAUDE.md: the Target Architecture section names the enrichment input in one
+        short entry, and the sentence that nothing in the repository fetches or parses source
+        pages stays as it is.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: []
+      branch: "feature/text-labels/1.1-adr"
+      commit_message: "docs(adr): model-derived labels as immutable inputs"
+      acceptance_criteria:
+        - "ADR 0005 states context, decision, consequences and the rejected alternatives"
+        - "CLAUDE.md names the enrichment input and changes no other rule"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/adr/0005-model-derived-labels.md"
+        - "CLAUDE.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: ["1.2"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "docs/adr/0005-model-derived-labels.md"
+      files_to_modify:
+        - "CLAUDE.md"
+
+    - id: "1.2"
+      title: "Evaluation set (operator and user)"
+      description: |
+        Private work; nothing but counts enters the repository.
+        1. In Athena, on the sale listings joined to their text row, assign each listing to the
+           first stratum that applies, in the order of the review's table (A to H), with these
+           keyword tests on the lower-cased description: auction 'subasta'; needs renovation
+           'para reformar|a reformar|necesita (una )?reforma|requiere reforma|para actualizar';
+           renovated 'reformad[oa]|recién reformad|totalmente reformad|reforma integral'.
+           Listings with an empty description or without a condition are not sampled.
+        2. Draw distinct descriptions at random with a recorded seed: A 40, B 30, C 15, D 40,
+           E 10, F 35, G 15, H 15 (200 in all). Record each stratum's population.
+        3. Write the sample to a private directory outside the repository, shuffled and
+           numbered, without stratum, condition or identifier in the file the labeller sees, and
+           keep the mapping from number to stratum, population and text_sha256 beside it.
+        4. Mail the file to the user with the label definitions of the feature plan; the user
+           fills in the two labels and returns it.
+        5. Join the returned labels to the mapping and write the evaluation set of the
+           conventions to the private directory.
+        6. Create dev/plans/implementations/FEATURE-012-text-labels.md with a section
+           "Evaluation set": the date, the strata with population and sample size, the seed, and
+           the distribution of the hand labels as counts. No text, no hash, no identifier.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: []
+      branch: "feature/text-labels/1.2-evaluation-set"
+      commit_message: "docs(plans): FEATURE-012 evaluation set, strata and hand-label counts"
+      acceptance_criteria:
+        - "The private evaluation set holds 200 rows with the six columns of the conventions and no empty label"
+        - "The strata's populations sum to the sale listings minus those not sampled"
+        - "The implementation note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: ["1.1", "1.3", "1.4", "1.5"]
+      reversible: true
+      rollback: "Revert the commit; delete the private directory"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+      files_to_modify: []
+
+    - id: "1.3"
+      title: "Answer type, validation and prompt"
+      description: |
+        Create the package src/enrichment with labeler.py and prompt.py as the conventions
+        describe them. SYSTEM_PROMPT is in English, states the task for one Spanish description
+        of a home for sale, carries the label definitions and their decision order word for
+        word, and tells the model to answer through the tool only. ANSWER_SCHEMA is a JSON
+        schema of type object with the two required properties, an enum of RENOVATION_STATES and
+        additionalProperties false.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.25
+      depends_on: ["1.1"]
+      branch: "feature/text-labels/1.3-answer-and-prompt"
+      commit_message: "feat(enrichment): text label, its validation and the prompt"
+      acceptance_criteria:
+        - "label_from_answer returns a TextLabel for each of the five states with a boolean is_auction"
+        - "It returns None for an unknown state, a missing key, an extra key, a non-boolean is_auction (0, 1, 'true') and a value that is not a mapping"
+        - "ANSWER_SCHEMA's enum equals RENOVATION_STATES and both properties are required"
+        - "SYSTEM_PROMPT names every value of RENOVATION_STATES; LABEL_VERSION is 'tl1'"
+        - "The existing suite is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_labeler.py"
+          change: "New file with the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_enrichment_labeler -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment'"
+        green:
+          change: "The package, the two dataclasses, the protocol, label_from_answer, and prompt.py."
+          command: "python -m unittest tests.test_enrichment_labeler -v"
+        refactor:
+          change: "Module docstrings say what belongs in each file; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/__init__.py"
+        - "src/enrichment/labeler.py"
+        - "src/enrichment/prompt.py"
+        - "tests/test_enrichment_labeler.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.2"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/__init__.py"
+        - "src/enrichment/labeler.py"
+        - "src/enrichment/prompt.py"
+        - "tests/test_enrichment_labeler.py"
+      files_to_modify: []
+
+    - id: "1.4"
+      title: "The Bedrock labeller"
+      description: |
+        src/enrichment/bedrock.py: BedrockTextLabeler(client, model_id, *, sleep=time.sleep)
+        implements TextLabeler with one Converse request per description: modelId, system with
+        SYSTEM_PROMPT, one user message holding the description, toolConfig with one tool named
+        ANSWER_TOOL_NAME whose input schema is ANSWER_SCHEMA and a toolChoice that forces it, and
+        inferenceConfig.maxTokens = MAX_OUTPUT_TOKENS = 200. No temperature or other sampling
+        parameter is set. The result is the tool input passed through label_from_answer, with
+        the usage's input and output tokens; a response without a tool use gives a None label.
+        A ClientError whose code is ThrottlingException is retried after 1, 2 and 4 seconds
+        through the injected sleep (four attempts); the fourth and every other error propagate.
+        requirements.txt pins boto3 exactly to the version pyiceberg[glue] resolves today.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.3"]
+      branch: "feature/text-labels/1.4-bedrock-labeller"
+      commit_message: "feat(enrichment): Bedrock text labeller behind the TextLabeler protocol"
+      acceptance_criteria:
+        - "The request carries the model id, the prompt, the description, the forced tool with ANSWER_SCHEMA and maxTokens 200, and botocore's stub accepts it against the service model"
+        - "A valid tool input becomes a LabelResult with the label and the usage's token counts"
+        - "A tool input outside the schema and a response without a tool use give a None label with the token counts"
+        - "Two throttled attempts and a success give the label after sleeps of 1 and 2 seconds; four throttled attempts raise the ClientError"
+        - "Another client error is raised at once, without a sleep"
+        - "No test opens a network connection"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_bedrock.py"
+          change: |
+            New file. A bedrock-runtime client built with dummy credentials and a fixed region,
+            wrapped in botocore.stub.Stubber with expected parameters; a recording sleep.
+          command: "python -m unittest tests.test_enrichment_bedrock -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.bedrock'"
+        green:
+          change: "The class, the request, the retry loop and the pin."
+          command: "python -m unittest tests.test_enrichment_bedrock -v"
+        refactor:
+          change: "The request is built by one function; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/bedrock.py"
+        - "tests/test_enrichment_bedrock.py"
+        - "requirements.txt"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.2"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/bedrock.py"
+        - "tests/test_enrichment_bedrock.py"
+      files_to_modify:
+        - "requirements.txt"
+
+    - id: "1.5"
+      title: "The evaluation command"
+      description: |
+        src/enrichment/evaluate.py: python -m src.enrichment.evaluate --evaluation-set <csv>
+        --model-id <id> [--results <csv>], with main(argv, *, labeler=None, clock=time.monotonic)
+        so that tests inject a fake labeller. It reads the evaluation set of the conventions,
+        refuses a file with a missing column, an unknown state or an is_auction that is neither
+        true nor false (exit code 2, naming the row number and the column, never a value),
+        labels each description once and prints:
+          texts: <n>
+          invalid answers: <n>
+          input tokens: <n>
+          output tokens: <n>
+          seconds per text: <x.xx>
+          renovation_state agreement: <x.xx>
+          <value>: labelled <n>, model <n>, both <n>, precision <x.xx>, recall <x.xx>, weighted precision <x.xx>, weighted recall <x.xx>
+        with one <value> line each for renovated, needs_renovation and is_auction. A weighted
+        measure weights every text by stratum_population divided by the stratum's texts in the
+        file. A measure whose denominator is zero prints n/a. An invalid answer counts as a
+        miss for every value. With --results it writes number, the two expected labels and the
+        two model labels per text, and no description. Without an injected labeller it builds
+        BedrockTextLabeler from a boto3 bedrock-runtime client.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2.0
+      depends_on: ["1.4"]
+      branch: "feature/text-labels/1.5-evaluation-command"
+      commit_message: "feat(enrichment): evaluate a labeller against hand labels, weighted by stratum"
+      acceptance_criteria:
+        - "With a fake labeller that agrees on every text all four measures are 1.00 and agreement is 1.00"
+        - "One false positive in a stratum of weight 100 lowers weighted precision far below raw precision, to the values the test computes by hand"
+        - "A value with no model answer prints n/a for precision, and one with no hand label n/a for recall"
+        - "An invalid answer is counted and lowers recall"
+        - "The output contains no description and no row of the file; --results holds numbers and labels only"
+        - "A file with a missing column or an unknown label exits 2 and names the row and the column"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_evaluate.py"
+          change: |
+            New file. Evaluation sets are written to a temporary directory from invented texts;
+            the fake labeller answers from a mapping of description to LabelResult.
+          command: "python -m unittest tests.test_enrichment_evaluate -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.evaluate'"
+        green:
+          change: "Reading and checking the file, the loop, the counts per value and the report."
+          command: "python -m unittest tests.test_enrichment_evaluate -v"
+        refactor:
+          change: "The measures are one pure function of counts; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/evaluate.py"
+        - "tests/test_enrichment_evaluate.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.2"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/evaluate.py"
+        - "tests/test_enrichment_evaluate.py"
+      files_to_modify: []
+
+    - id: "1.6"
+      title: "Paid evaluation and gate (operator, with approval)"
+      description: |
+        Needs tasks 1.2 and 1.5 and the user's approval of the paid run and its upper bound.
+        1. Read the current Bedrock price of the model and the id of its inference profile in
+           the account; confirm that model-invocation logging is off.
+        2. Run the evaluation command once against the private evaluation set, with --results
+           into the private directory.
+        3. Record in the implementation note, as counts only: the report's lines, the price, the
+           cost of the run, and the estimated cost of the backlog and of a month from the
+           measured tokens.
+        4. Gate: renovated, needs_renovation and is_auction each need a weighted precision of
+           at least 0.90 and a weighted recall of at least 0.80. The user reads the
+           disagreements in the private results file. If a value fails, the user decides between
+           dropping the label and a larger model for it; that decision and a changed prompt are
+           a new LABEL_VERSION and a new run, and a dropped label returns the plan to the
+           reviewer before phase 2.
+        5. Add the progress-log entry to the feature plan.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["1.2", "1.5"]
+      branch: "feature/text-labels/1.6-evaluation-record"
+      commit_message: "docs(plans): FEATURE-012 evaluation of the model against hand labels"
+      acceptance_criteria:
+        - "The implementation note records the measures per decisive value, the tokens, the price and the cost"
+        - "The gate's result and the user's decision are recorded"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+        - "dev/plans/FEATURE-012-text-labels.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+        - "dev/plans/FEATURE-012-text-labels.md"
+
+    - id: "2.1"
+      title: "Pending texts"
+      description: |
+        src/enrichment/sql/pending_text.sql and pending_texts(connection, listing, listing_text,
+        stored) -> pyarrow.Table in src/enrichment/text_labels.py, with ANSWER_SCHEMA_ARROW.
+        listing needs source, source_listing_id and operation; listing_text needs source,
+        source_listing_id and description; stored needs text_sha256 and label_version. The
+        result has text_sha256 and description, one row per distinct hash of a non-empty
+        description of a sale listing that has no stored answer under LABEL_VERSION, ordered by
+        text_sha256. The function registers its inputs under names of its own and unregisters
+        them; LABEL_VERSION reaches the statement as a DuckDB variable.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["1.6"]
+      branch: "feature/text-labels/2.1-pending-texts"
+      commit_message: "feat(enrichment): the sale descriptions that have no stored answer"
+      acceptance_criteria:
+        - "A sale listing's description without an answer is pending; a rent listing's never is"
+        - "Two sale listings with one description are one pending row"
+        - "A null description and one of white space only are never pending"
+        - "An answer under LABEL_VERSION removes the text; one under another version does not"
+        - "text_sha256 equals hashlib.sha256 of the UTF-8 bytes for a description with non-ASCII characters"
+        - "Rows are ordered by text_sha256 and the session keeps no relation of the function"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_text_labels.py"
+          change: "New file with helpers that build the three Arrow tables and the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.text_labels'"
+        green:
+          change: "The statement and the function."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+        refactor:
+          change: "The statement's header comment states the rule; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/text_labels.py"
+        - "src/enrichment/sql/pending_text.sql"
+        - "tests/test_enrichment_text_labels.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/text_labels.py"
+        - "src/enrichment/sql/pending_text.sql"
+        - "tests/test_enrichment_text_labels.py"
+      files_to_modify: []
+
+    - id: "2.2"
+      title: "One run, in memory"
+      description: |
+        label_texts(pending, labeler, *, model_id, max_texts, write_part, now) -> RunReport in
+        src/enrichment/text_labels.py. It labels the first max_texts rows of pending one after
+        another, collects valid answers as rows of ANSWER_SCHEMA_ARROW with labeled_at from
+        now(), and hands every full part of PART_ROWS rows, and the last partial one, to
+        write_part(n, table). RunReport is a frozen dataclass of counts: pending, labelled,
+        invalid, input_tokens, output_tokens, remaining (pending minus labelled). An invalid
+        answer is counted with its tokens and not stored. An exception of the labeller
+        propagates after the parts already handed over; the rows collected since the last part
+        are written first. check_model(stored, model_id) raises LabelVersionError, naming the
+        version and both model ids, when stored answers of LABEL_VERSION carry another model id.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["2.1"]
+      branch: "feature/text-labels/2.2-one-run"
+      commit_message: "feat(enrichment): label pending texts in parts under a cap"
+      acceptance_criteria:
+        - "450 pending texts under a cap of 1,000 give parts of 200, 200 and 50 rows and a report of 450 labelled and 0 remaining"
+        - "A cap of 300 labels the first 300 in the order of pending and reports 150 remaining"
+        - "An invalid answer is counted, its tokens are counted, and its text is in no part"
+        - "A labeller that raises on the 250th text leaves a part of 200 and a part of 49 written, and the error propagates"
+        - "Every stored row carries LABEL_VERSION, the model id and the instant of now()"
+        - "check_model raises for another model id under the same version and passes for the same id, for another version and for no stored answer"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_text_labels.py"
+          change: "Add a fake labeller, a recording write_part and the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+          expected_failure: "ImportError: cannot import name 'label_texts' from 'src.enrichment.text_labels'"
+        green:
+          change: "The loop, the report and check_model."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/text_labels.py"
+        - "tests/test_enrichment_text_labels.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/enrichment/text_labels.py"
+        - "tests/test_enrichment_text_labels.py"
+
+    - id: "2.3"
+      title: "The command and the stored parts"
+      description: |
+        In src/enrichment/text_labels.py: stored_answers(connection, labels) -> pyarrow.Table
+        reads every part under <labels> with the columns of ANSWER_SCHEMA_ARROW and returns an
+        empty table of that schema when no part exists; a part that lacks a column raises
+        StoredAnswerError naming the part's path below <labels> and the column.
+        part_writer(labels, run_id) returns the write_part of the conventions' layout through
+        pyarrow.fs.FileSystem.from_uri, and refuses to replace an existing part. main(argv, *,
+        labeler=None, now=...) is python -m src.enrichment.text_labels --catalog <name> --labels
+        <dir-or-s3> --model-id <id> --max-texts <n>: it reads source, source_listing_id and
+        operation of Silver's listing and source, source_listing_id and description of
+        listing_text through the catalog, runs check_model, pending_texts and label_texts, and
+        prints the report as "pending: <n>", "labelled: <n>", "invalid answers: <n>", "input
+        tokens: <n>", "output tokens: <n>", "remaining: <n>". Exit code 0 on success, 1 for
+        LabelVersionError or StoredAnswerError (message without a value), 2 for usage. For an
+        s3:// location the session reads through httpfs as the Silver command does.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 2.0
+      depends_on: ["2.2"]
+      branch: "feature/text-labels/2.3-command"
+      commit_message: "feat(enrichment): the text label command and its stored parts"
+      acceptance_criteria:
+        - "Against a local catalog backfilled from the synthetic landing and an empty directory, a run with a fake labeller stores one answer per distinct non-empty description under the layout of the conventions and prints the six report lines"
+        - "A second run prints pending 0 and labelled 0 and writes no file"
+        - "A run with a cap below the pending count leaves the rest, and the next run labels exactly the rest"
+        - "stored_answers of an empty or missing directory is an empty table with the schema"
+        - "A part without a column exits 1 and names the part and the column"
+        - "Stored answers of another model under LABEL_VERSION exit 1 and nothing is written"
+        - "The output contains no description and no hash"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_text_labels.py"
+          change: "Add a class that backfills a SQLite catalog from generate_landing_v3 once and runs main with a fake labeller and a fixed clock."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+          expected_failure: "ImportError: cannot import name 'main' from 'src.enrichment.text_labels'"
+        green:
+          change: "The reader, the writer and the command."
+          command: "python -m unittest tests.test_enrichment_text_labels -v"
+        refactor:
+          change: "None expected beyond docstrings."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/text_labels.py"
+        - "tests/test_enrichment_text_labels.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/enrichment/text_labels.py"
+        - "tests/test_enrichment_text_labels.py"
+
+    - id: "3.1"
+      title: "The table listing_text_label"
+      description: |
+        Starts after FEATURE-009, FEATURE-010 and FEATURE-011 are on main and main is merged
+        into the integration branch. src/silver/sql/listing_text_label.sql and
+        listing_text_labels(connection, listing, listing_text, answers) -> pyarrow.Table in
+        src/silver/rebuild.py, with TEXT_LABEL_TABLE, TEXT_LABEL_LISTING_COLUMNS (source,
+        source_listing_id, operation) and TEXT_LABEL_TEXT_COLUMNS (source, source_listing_id,
+        description). The function prepares the session, registers its three inputs under names
+        of its own, runs the statement and unregisters them, so it replaces no silver_<table>.
+        The statement gives the table of the conventions: listing_text left-joined to the newest
+        answer of LABEL_VERSION for sha256(description), and the answer is taken only when the
+        listing's operation is sale.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["2.3"]
+      branch: "feature/text-labels/3.1-table"
+      commit_message: "feat(silver): listing_text_label from stored model answers"
+      acceptance_criteria:
+        - "A sale listing whose description has an answer carries the two labels, the version, the model id and labeled_at"
+        - "A listing without an answer, with an empty description, or with an answer of another label_version only has a row with five nulls"
+        - "A rent listing has nulls even when its description has an answer"
+        - "Of two answers for one hash the one with the newer labeled_at wins"
+        - "Two listings with one description carry the same answer"
+        - "The hash of a description with non-ASCII characters matches an answer keyed by hashlib's digest"
+        - "The table has the eight columns of the conventions in order, one row per row of listing_text, ordered by source, source_listing_id"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_text_label.py"
+          change: "New file with helpers that build the three Arrow tables and the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_silver_listing_text_label -v"
+          expected_failure: "ImportError: cannot import name 'listing_text_labels' from 'src.silver.rebuild'"
+        green:
+          change: "The statement, the function and the three constants."
+          command: "python -m unittest tests.test_silver_listing_text_label -v"
+        refactor:
+          change: "The statement's header comment states the rule; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_text_label.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_text_label.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/enrichment/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_text_label.sql"
+        - "tests/test_silver_listing_text_label.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "3.2"
+      title: "A run given --text-labels writes the table"
+      description: |
+        In src/silver/rebuild.py: process_landing gains the keyword text_labels: str | None =
+        None. When it is given, the run reads the stored answers with stored_answers, reads the
+        two column sets from Silver after this run's listings are written and before any label
+        rule replaces a temporary table, and writes TEXT_LABEL_TABLE in the existing
+        write_silver_tables call of the whole-table labels. Without it the run neither reads
+        nor writes the table. main gains --text-labels <dir-or-s3>, and _report prints
+        `listing_text_label: snapshot <id>` after the last label line only for a run that wrote
+        it.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["3.1"]
+      branch: "feature/text-labels/3.2-pipeline"
+      commit_message: "feat(silver): write listing_text_label in a run given --text-labels"
+      acceptance_criteria:
+        - "A backfill with text_labels over answers stored by the command with a fake labeller writes the table, and every sale listing with a non-empty description carries a label"
+        - "Commits processed one at a time with the same stored answers give the rows of that backfill"
+        - "A run with text_labels and an empty directory writes the table with null labels"
+        - "A run without text_labels writes no such table and every other table as before"
+        - "A run with nothing pending writes no snapshot of the table"
+        - "The command with --text-labels prints one line `listing_text_label: snapshot <digits>`, and none without it"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            tests/test_silver_incremental.py: a class that stores answers once (backfill, then
+            the labeller's main with a fake labeller) and compares a backfill with stepwise runs,
+            both given text_labels. tests/test_silver_cli.py: the report line with and without
+            the argument.
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_cli -v"
+          expected_failure: "TypeError: process_landing() got an unexpected keyword argument 'text_labels'"
+        green:
+          change: "The keyword, the reads, the table in the write call, the argument and the report line."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_cli tests.test_silver_rebuild -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+        - "src/enrichment/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "4.1"
+      title: "Infrastructure: the labeller task and its start rule"
+      description: |
+        infra/silver/labels.tf:
+        - a task definition for the labeller on the existing cluster and image, ARM64, 0.25 vCPU
+          and 1 GB, with entryPoint ["python", "-m", "src.enrichment.text_labels"] and the
+          command --catalog silver --labels s3://<lake bucket>/enrichment/v1/text_label
+          --model-id <label_model_id> --max-texts <label_max_texts>, the catalog environment of
+          the Silver task and its log group with the stream prefix "labeller";
+        - a task role that may read the Glue database and the Silver table files, list and
+          write under enrichment/v1/text_label/ and nowhere else, and call bedrock:InvokeModel
+          on the resources of label_model_arns only;
+        - an EventBridge rule whose pattern is: source aws.ecs, detail-type "ECS Task State
+          Change", the cluster's ARN, lastStatus STOPPED, stopCode EssentialContainerExited,
+          containers exitCode 0, and group "family:<the Silver task definition's family>"; its
+          state follows labeller_enabled; its target runs the labeller task on Fargate with the
+          Silver task's network configuration, through a role limited to ecs:RunTask on this
+          task definition and iam:PassRole on its two roles.
+        infra/silver/variables.tf: label_model_id (string), label_model_arns (list of strings),
+        label_max_texts (number, default 2000) and labeller_enabled (bool, default false).
+        infra/silver/ecs.tf: the Silver task's command gains --text-labels with the same
+        location, and its role may read that prefix. infra/silver/alerts.tf: the failure mail's
+        text says that the task may be the Silver task or the labeller and that only the Silver
+        task is retried by the queue.
+        Nothing is applied in this task.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 2.5
+      depends_on: ["3.2"]
+      branch: "feature/text-labels/4.1-infrastructure"
+      commit_message: "feat(infra): the text labeller task, its role and its start rule"
+      acceptance_criteria:
+        - "terraform fmt -check and validate pass"
+        - "The start rule's pattern names the Silver task definition's family, so a stopped labeller does not match it"
+        - "The labeller's role names one model resource list, one write prefix and no wildcard action"
+        - "With labeller_enabled false the rule is disabled"
+        - "No account id, bucket name or ARN is committed; the new variables have no real default"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "infra/silver/labels.tf"
+        - "infra/silver/variables.tf"
+        - "infra/silver/ecs.tf"
+        - "infra/silver/alerts.tf"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/silver/*.tfvars"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "infra/silver/labels.tf"
+      files_to_modify:
+        - "infra/silver/variables.tf"
+        - "infra/silver/ecs.tf"
+        - "infra/silver/alerts.tf"
+
+    - id: "4.2"
+      title: "Runbook and README"
+      description: |
+        docs/silver-rebuild.md: a section on text labels with the flow (Silver run, labeller,
+        next Silver run), the stored layout, the two commands and their report lines, the cap,
+        what a new LABEL_VERSION means and costs, the label definitions, the reading (a label is
+        the model's reading of the description under a version, with the measured precision and
+        recall of the implementation note; null means not labelled or not a sale), how to turn
+        the labeller off, and the cost table. listing_text_label joins "The tables" with the
+        note that it exists only for a run given --text-labels. README.md: the status text and
+        the architecture bullet name the enrichment input and the table.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["4.1"]
+      branch: "feature/text-labels/4.2-docs"
+      commit_message: "docs(silver): text labels, the labeller and its cost"
+      acceptance_criteria:
+        - "The runbook states the flow, the layout, the cap, the versioning, the definitions, the reading and the cost"
+        - "The README counts the Silver tables correctly"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+
+    - id: "4.3"
+      title: "Deployment, backlog and first runs (operator, with approval)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR. Every
+        AWS action and every paid run needs explicit user approval in chat, with its upper
+        bound.
+        1. Wait for the image of the merge commit; set silver_image and the four new variables
+           in the gitignored tfvars, labeller_enabled false; terraform plan and apply. Only the
+           resources of task 4.1 and a new Silver task definition revision may change.
+        2. Confirm that model-invocation logging is off. Start the labeller task by hand for the
+           backlog under an approved cap; from its log take the report's counts.
+        3. Let the next Silver run write the table. In Athena, as counts only: rows, labelled
+           rows, the distribution of both labels, labels on listings that are not a sale (must
+           be 0), and the cross table of renovation_state against listing.condition and against
+           the keyword strata of task 1.2.
+        4. Give the user, privately, the descriptions the model calls an auction although they
+           lack the keyword, at most 30 at random; record how many are auctions.
+        5. Set labeller_enabled true and apply; record the next triggered run's counts and
+           duration, and that a finished labeller started no further task.
+        6. Complete the implementation note with the counts, tokens, cost and durations; set the
+           feature plan to complete, tick its success criteria, add the progress-log entry and
+           update the registry row.
+      status: "not_started"
+      complexity: "high"
+      estimated_hours: 2.0
+      depends_on: ["4.2"]
+      branch: "feature/text-labels/4.3-first-run-record"
+      commit_message: "docs(plans): FEATURE-012 backlog, first runs and label counts"
+      acceptance_criteria:
+        - "Every sale listing with a non-empty description is labelled or counted as pending or invalid"
+        - "No listing that is not a sale carries a label"
+        - "The cost of the backlog and the tokens are recorded and lie under the approved bound"
+        - "The share of true auctions among the model's auctions without the keyword is recorded"
+        - "A finished labeller task started no further labeller task"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+        - "dev/plans/FEATURE-012-text-labels.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-012-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set labeller_enabled false and apply; remove --text-labels by setting silver_image back and applying; drop the Silver table listing_text_label; the stored answers may stay"
+      files_to_create: []
+      files_to_modify:
+        - "dev/plans/implementations/FEATURE-012-text-labels.md"
+        - "dev/plans/FEATURE-012-text-labels.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-012-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/text-labels/integration"
+    task_branch_strategy: |
+      Create the integration branch from main once main holds this feature's plan, review and
+      technical plan. Each task branch starts from the integration branch after the tasks it
+      depends on are merged there. Tasks 1.1 and 1.2 have no dependency and may run beside each
+      other and beside 1.3 to 1.5; every other task runs alone. Before task 3.1, FEATURE-009,
+      FEATURE-010 and FEATURE-011 must be on main, and main is merged into the integration
+      branch with --no-ff; if one of them is not merged yet, task 3.1 waits. Task 4.3 starts
+      from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3, 3.1, 3.2, 4.1, 4.2
+      (1.2 as soon as the user's labels are back, and before 1.6), never rewriting history, and
+      run validation.final_commands there. The final PR goes from the integration branch to
+      main. Task 4.3's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): renovation state and auctions read from the description by a model"
+    final_pr_description: |
+      Implements FEATURE-012: a labeller command stores one model answer per redacted sale
+      description as an immutable input, and a Silver run given --text-labels writes
+      listing_text_label from them. See dev/reviews/REVIEW-FEATURE-012.md (approved) and ADR
+      0005. Nothing is applied by this PR; task 4.3 deploys with approval.
+
+  notes:
+    - "Never print, log or commit a description, a hash or a listing id; every record is counts. The evaluation set and its results stay in a private directory outside the repository."
+    - "Only the description leaves Silver. The title is not redacted and names a street."
+    - "Every paid run needs the user's approval with an upper bound: the evaluation of task 1.6 and each run of task 4.3."
+    - "The Bedrock request is checked against botocore's service model by the stub. If the service rejects the forced tool choice or the output limit for the chosen model in task 1.6, stop and return to the reviewer; do not work around it in the operator run."
+    - "The model id and its ARNs are account configuration: task arguments and gitignored tfvars, never a default in the repository."
+    - "infra/silver/*.tfvars hold real values and are gitignored: never stage, print or commit them."
+    - "The start rule must name the Silver task definition's family. A rule on the cluster alone starts the labeller from the labeller."
+    - "Read the columns the text labels need from Silver before listing_quality(), listing_events() or listing_prices() is called: each replaces temporary tables the fallback read uses."
+    - "A changed prompt, schema or model is a new LABEL_VERSION; the evaluation is repeated for it before the backlog is labelled again."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."
