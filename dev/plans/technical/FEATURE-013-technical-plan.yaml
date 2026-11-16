@@ -210,7 +210,7 @@ technical_plan:
         write_silver_tables call with listing_quality and listing_event. Remove
         _quality_from_silver if nothing else uses it. Update the comment above the call: a run
         can also join or split groups of listings it did not touch.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.2"]

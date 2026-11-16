@@ -6,21 +6,33 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import AlwaysTrue
 
 from src.contracts import landing_v3_columns
 from src.silver.landing import register_landing_v3
+from src.silver.property_group import (
+    PROPERTY_GROUP_SCHEMA,
+    PROPERTY_GROUP_TABLE,
+    duplicate_pairs,
+    property_group_rows,
+)
 from src.silver.rebuild import (
     NAMESPACE,
     SILVER_TABLES,
+    TRANSFORMATION_VERSION,
     build_tables,
     local_commits,
     process_landing,
 )
+from src.silver.sink import write_silver_tables
 from src.synthetic.landing import generate_landing_v3
 
 NOW = datetime(2026, 10, 20, 6, 0, tzinfo=UTC)
+
+# Every table a run writes: those of build_tables and the property groups computed in Python.
+WRITTEN_TABLES = (*SILVER_TABLES, PROPERTY_GROUP_TABLE)
 
 
 class TestIncrementalEqualsBackfill(unittest.TestCase):
@@ -40,10 +52,14 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             {c.run_id: c.run_started_at for c in cls.commits},
             {},
         )
-        cls.oracle = {
-            name: sorted(map(repr, table.to_pylist()))
-            for name, table in build_tables(connection).items()
-        }
+        tables = build_tables(connection)
+        cls.oracle = {name: sorted(map(repr, table.to_pylist())) for name, table in tables.items()}
+        groups = property_group_rows(
+            tables["listing"],
+            duplicate_pairs(connection, tables["listing"]),
+            transformation_version=TRANSFORMATION_VERSION,
+        )
+        cls.oracle[PROPERTY_GROUP_TABLE] = sorted(map(repr, groups.to_pylist()))
         connection.close()
 
     @classmethod
@@ -69,7 +85,7 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
         )
 
     def row_sets(self, catalog) -> dict[str, list[str]]:
-        tables = (*SILVER_TABLES, "landing_ingest")
+        tables = (*WRITTEN_TABLES, "landing_ingest")
         result = {}
         for name in tables:
             rows = catalog.load_table(f"{NAMESPACE}.{name}").scan().to_arrow().to_pylist()
@@ -77,6 +93,9 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
                 rows = [r["run_id"] for r in rows]
             result[name] = sorted(map(repr, rows))
         return result
+
+    def property_groups(self, catalog) -> pa.Table:
+        return catalog.load_table(f"{NAMESPACE}.{PROPERTY_GROUP_TABLE}").scan().to_arrow()
 
     def in_steps(self, size: int) -> dict[str, list[str]]:
         catalog = self.catalog()
@@ -93,9 +112,31 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
     def test_a_backfill_equals_the_full_rule_over_every_run(self) -> None:
         actual = self.backfill()
 
-        for table in SILVER_TABLES:
+        for table in WRITTEN_TABLES:
             with self.subTest(table=table):
                 self.assertEqual(self.oracle[table], actual[table])
+
+    def test_the_synthetic_duplicate_is_the_only_property_group(self) -> None:
+        catalog = self.catalog()
+        self.process(catalog, self.commits, mode="backfill")
+
+        rows = self.property_groups(catalog).to_pylist()
+
+        self.assertEqual(
+            sorted(
+                (row["source_listing_id"], row["property_group_id"], row["group_is_complete"])
+                for row in rows
+                if row["group_size"] > 1
+            ),
+            [
+                ("syn-twin-a", "syn:syn-twin-a", True),
+                ("syn-twin-b", "syn:syn-twin-a", True),
+            ],
+        )
+        self.assertEqual(
+            [row["group_size"] for row in rows if row["source_listing_id"] == "syn-new-unit"],
+            [1],
+        )
 
     def test_one_at_a_time_three_at_a_time_and_all_at_once_agree(self) -> None:
         expected = self.backfill()
@@ -127,7 +168,7 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
         self.process(catalog, self.commits)
         snapshots = {
             name: catalog.load_table(f"{NAMESPACE}.{name}").current_snapshot().snapshot_id
-            for name in SILVER_TABLES
+            for name in WRITTEN_TABLES
         }
 
         result = self.process(catalog, self.commits)
@@ -175,6 +216,52 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
         for name, schema in schemas.items():
             with self.subTest(table=name):
                 self.assertEqual(schema, catalog.load_table(f"{NAMESPACE}.{name}").schema())
+
+    def test_tables_that_predate_listing_property_group_gain_it_equal_to_a_backfill(self) -> None:
+        catalog = self.catalog()
+        ordered = sorted(self.commits, key=lambda c: (c.run_started_at, c.run_id))
+        self.process(catalog, ordered[: len(ordered) // 2])
+        catalog.drop_table(f"{NAMESPACE}.{PROPERTY_GROUP_TABLE}")
+        schemas = {
+            name: catalog.load_table(f"{NAMESPACE}.{name}").schema() for name in SILVER_TABLES
+        }
+
+        self.process(catalog, ordered)
+
+        self.assertEqual(self.backfill(), self.row_sets(catalog))
+        for name, schema in schemas.items():
+            with self.subTest(table=name):
+                self.assertEqual(schema, catalog.load_table(f"{NAMESPACE}.{name}").schema())
+
+    def test_stale_property_group_rows_are_replaced_by_the_next_run(self) -> None:
+        # A run can join or split groups of listings it did not touch, so the table is replaced
+        # whole: rows that call every listing its own group must not survive the next run.
+        catalog = self.catalog()
+        ordered = sorted(self.commits, key=lambda c: (c.run_started_at, c.run_id))
+        self.process(catalog, ordered[:-1])
+        before = self.property_groups(catalog).to_pylist()
+        stale = [
+            row
+            | {
+                "property_group_id": f"{row['source']}:{row['source_listing_id']}",
+                "group_size": 1,
+                "group_is_complete": True,
+            }
+            for row in before
+        ]
+        self.assertNotEqual(before, stale)
+        write_silver_tables(
+            catalog,
+            NAMESPACE,
+            {PROPERTY_GROUP_TABLE: pa.Table.from_pylist(stale, schema=PROPERTY_GROUP_SCHEMA)},
+            {},
+        )
+
+        self.process(catalog, ordered)
+
+        self.assertEqual(
+            self.backfill()[PROPERTY_GROUP_TABLE], self.row_sets(catalog)[PROPERTY_GROUP_TABLE]
+        )
 
     def test_a_non_utc_session_zone_gives_the_same_result(self) -> None:
         catalog = self.catalog()
