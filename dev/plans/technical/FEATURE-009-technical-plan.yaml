@@ -83,7 +83,7 @@ technical_plan:
         in src/silver/rebuild.py. The statement returns the columns of the conventions except
         previous_price_eur and declared_previous_price_eur. Do not add the table to SILVER_TABLES
         yet.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: []
@@ -145,7 +145,7 @@ technical_plan:
       description: |
         Add previous_price_eur and declared_previous_price_eur to the statement, in the column
         order of the conventions.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.1"]
@@ -197,7 +197,7 @@ technical_plan:
         returns the rows of listing_event and listing_price; both written in the existing
         write_silver_tables call. Update the comment above the call: a run can also add a
         sighting to any listing's history.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.2"]
@@ -255,7 +255,7 @@ technical_plan:
         reduction scenario exists already as syn-repriced (review L1). _report in
         src/silver/rebuild.py prints `listing_price: snapshot <id>` after the
         listing_property_group line.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["2.1"]
@@ -320,7 +320,7 @@ technical_plan:
         is recomputed and replaced whole in every run. Add the report line to the example output
         and the table to the incremental-mode description. README.md: the status text counts one
         more Iceberg table.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
