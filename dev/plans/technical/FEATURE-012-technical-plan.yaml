@@ -207,7 +207,7 @@ technical_plan:
         word, and tells the model to answer through the tool only. ANSWER_SCHEMA is a JSON
         schema of type object with the two required properties, an enum of RENOVATION_STATES and
         additionalProperties false.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.25
       depends_on: ["1.1"]
