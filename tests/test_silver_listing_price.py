@@ -172,5 +172,68 @@ class TestPeriods(unittest.TestCase):
         self.assertEqual({row["transformation_version"] for row in rows}, {"silver-v1"})
 
 
+LISTING_PRICE_COLUMNS = [
+    "source",
+    "source_listing_id",
+    "period",
+    "price_eur",
+    "first_observed_at",
+    "last_observed_at",
+    "sightings",
+    "previous_price_eur",
+    "declared_previous_price_eur",
+    "is_current",
+    "transformation_version",
+]
+
+
+class TestPreviousPrices(unittest.TestCase):
+    def test_the_observed_previous_price_is_the_price_of_the_period_before(self):
+        rows = prices(
+            [
+                card("syn-a", at(1), 200_000),
+                card("syn-a", at(2), 190_000),
+                card("syn-a", at(3), 200_000),
+            ]
+        )
+
+        self.assertEqual([row["previous_price_eur"] for row in rows], [None, 200_000, 190_000])
+
+    def test_the_declared_previous_price_is_that_of_the_first_card_of_the_period(self):
+        rows = prices(
+            [
+                card("syn-a", at(1), 200_000),
+                card("syn-a", at(2), 190_000, 210_000),
+                card("syn-a", at(3), 190_000, 200_000),
+            ]
+        )
+
+        self.assertEqual([row["declared_previous_price_eur"] for row in rows], [None, 210_000])
+
+    def test_the_declared_previous_price_of_a_period_that_starts_with_a_detail_record(self):
+        rows = prices(
+            [card("syn-a", at(2), 290_000, 280_000)],
+            [detail("syn-a", at(1), 290_000, 300_000)],
+        )
+
+        self.assertEqual(
+            [(row["period"], row["declared_previous_price_eur"]) for row in rows], [(1, 300_000)]
+        )
+
+    def test_a_first_sighting_without_a_declared_price_leaves_it_null(self):
+        rows = prices([card("syn-a", at(1), 200_000), card("syn-a", at(2), 200_000, 220_000)])
+
+        self.assertIsNone(rows[0]["declared_previous_price_eur"])
+
+    def test_the_table_has_the_eleven_columns_in_order(self):
+        table = listing_prices(
+            duckdb.connect(),
+            pa.Table.from_pylist([card("syn-a", at(1), 200_000)], schema=OBSERVATION_SCHEMA),
+            pa.Table.from_pylist([], schema=DETAIL_SCHEMA),
+        )
+
+        self.assertEqual(table.column_names, LISTING_PRICE_COLUMNS)
+
+
 if __name__ == "__main__":
     unittest.main()
