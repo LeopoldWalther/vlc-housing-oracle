@@ -24,6 +24,7 @@ from pyiceberg.expressions import In
 from src.contracts import landing_v3_sha256
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
+from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
 from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
@@ -48,6 +49,8 @@ SILVER_TABLES = (
     "listing",
     "listing_quality",
     "listing_text",
+    "feature_pattern",
+    "listing_feature_label",
     "listing_event",
     "listing_price",
 )
@@ -75,6 +78,9 @@ LABEL_LISTING_COLUMNS = (
     *QUALITY_LISTING_COLUMNS,
     *(name for name in PROPERTY_GROUP_LISTING_COLUMNS if name not in QUALITY_LISTING_COLUMNS),
 )
+
+# The columns of Silver listing_text that the feature rules read.
+FEATURE_TEXT_COLUMNS = ("source", "source_listing_id", "features")
 
 # Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
 # Prices are EUR for sale and EUR per month for rent; areas are m².
@@ -153,6 +159,8 @@ class ProcessResult:
     days: dict[str, tuple[date, ...]]
     affected: int
     snapshot_ids: dict[str, int | None]
+    # Feature wordings of this run's Silver that are not in the registry.
+    unknown_feature_patterns: int
 
 
 def local_commits(landing: Path) -> list[LandingCommit]:
@@ -186,7 +194,7 @@ def process_landing(
     ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
     todo = pending(commits, set(ingested))
     if not todo:
-        return ProcessResult(0, (), {}, 0, {})
+        return ProcessResult(0, (), {}, 0, {}, 0)
 
     known = {run_id: run.observed_dates for run_id, run in ingested.items()}
     known |= {commit.run_id: commit.observed_dates for commit in todo}
@@ -242,16 +250,15 @@ def process_landing(
             properties=properties,
         )
     # A run can retract or add events of any listing, add a sighting to any listing's price
-    # history, move a municipality's centre and with it the flag of any listing, and join or split
-    # property groups of listings it did not touch, so these tables are recomputed and replaced
-    # whole; they read Silver after this run's days and listings are written.
+    # history, move a municipality's centre and with it the flag of any listing, join or split
+    # property groups of listings it did not touch, and change any listing's features and with
+    # them the counts of any wording, so these tables are recomputed and replaced whole; they
+    # read Silver after this run's days and listings are written.
+    labels = _labels_from_silver(connection, catalog)
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
-        {
-            **_labels_from_silver(connection, catalog),
-            **_history_from_silver(connection, catalog),
-        },
+        {**labels, **_history_from_silver(connection, catalog)},
         properties,
         allow_new_columns=backfill,
     )
@@ -262,6 +269,7 @@ def process_landing(
         days={name: tuple(sorted(days[name])) for name in DAY_TABLES},
         affected=len(affected),
         snapshot_ids=snapshot_ids,
+        unknown_feature_patterns=labels["feature_pattern"]["target"].null_count,
     )
 
 
@@ -404,17 +412,25 @@ def _compute_listings(
 def _labels_from_silver(
     connection: duckdb.DuckDBPyConnection, catalog: Catalog
 ) -> dict[str, pa.Table]:
-    """``listing_quality`` and the property groups over one read of Silver's current listing."""
-    # Read before listing_quality(): it replaces silver_listing, which the read falls back to
-    # while the catalog has no listing table, with the quality columns only.
-    listing = _silver_columns(connection, catalog, "listing", LABEL_LISTING_COLUMNS)
+    """The label tables over one read of Silver's current ``listing`` and ``listing_text``.
+
+    These are ``listing_quality``, the property groups, ``feature_pattern`` and
+    ``listing_feature_label``.
+    """
+    # Read both before any rule: each rule replaces silver_listing or silver_listing_text, which
+    # the reads fall back to while the catalog has no such table, with its own columns only.
+    listing = _silver_columns(connection, catalog, "listing", None)
+    listing_text = _silver_columns(connection, catalog, "listing_text", FEATURE_TEXT_COLUMNS)
+    grouped = listing.select(LABEL_LISTING_COLUMNS)
     return {
         "listing_quality": listing_quality(connection, listing.select(QUALITY_LISTING_COLUMNS)),
         PROPERTY_GROUP_TABLE: property_group_rows(
-            listing,
-            duplicate_pairs(connection, listing),
+            grouped,
+            duplicate_pairs(connection, grouped),
             transformation_version=TRANSFORMATION_VERSION,
         ),
+        "feature_pattern": feature_patterns(connection, listing, listing_text),
+        "listing_feature_label": listing_feature_labels(connection, listing_text),
     }
 
 
@@ -446,15 +462,20 @@ def _history_from_silver(
 
 
 def _silver_columns(
-    connection: duckdb.DuckDBPyConnection, catalog: Catalog, name: str, columns: Sequence[str]
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    name: str,
+    columns: Sequence[str] | None,
 ) -> pa.Table:
+    """Silver's current rows of one table; ``columns`` of None reads every column."""
     identifier = f"{NAMESPACE}.{name}"
     if catalog.table_exists(identifier):
-        return catalog.load_table(identifier).scan(selected_fields=tuple(columns)).to_arrow()
-    # A day table appears with its first day; until then this run's own result, empty as well,
+        selected = ("*",) if columns is None else tuple(columns)
+        return catalog.load_table(identifier).scan(selected_fields=selected).to_arrow()
+    # A table appears with its first rows; until then this run's own result, empty as well,
     # gives the columns their types.
     return connection.sql(
-        f"SELECT {', '.join(columns)} FROM silver_{name} LIMIT 0"
+        f"SELECT {'*' if columns is None else ', '.join(columns)} FROM silver_{name} LIMIT 0"
     ).to_arrow_table()
 
 
@@ -505,6 +526,41 @@ def listing_quality(connection: duckdb.DuckDBPyConnection, listing: pa.Table) ->
     return connection.sql(_statement("listing_quality")).to_arrow_table()
 
 
+def feature_patterns(
+    connection: duckdb.DuckDBPyConnection, listing: pa.Table, listing_text: pa.Table
+) -> pa.Table:
+    """The ``feature_pattern`` rows: every feature wording of Silver's ``listing_text``.
+
+    The given tables replace the temporary tables ``silver_listing`` and ``silver_listing_text``:
+    call this after every other statement of the session that reads them. ``listing`` needs the
+    key and every attribute column a registry target names; ``listing_text`` needs the key and
+    ``features``.
+    """
+    _prepare(connection)
+    _replace_silver(connection, {"listing": listing, "listing_text": listing_text})
+    return connection.sql(_statement("feature_pattern")).to_arrow_table()
+
+
+def listing_feature_labels(
+    connection: duckdb.DuckDBPyConnection, listing_text: pa.Table
+) -> pa.Table:
+    """The ``listing_feature_label`` rows: one per row of Silver's ``listing_text``.
+
+    The given table, which needs the key and ``features``, replaces the temporary table
+    ``silver_listing_text``: call this after every other statement of the session that reads it.
+    """
+    _prepare(connection)
+    _replace_silver(connection, {"listing_text": listing_text})
+    return connection.sql(_statement("listing_feature_label")).to_arrow_table()
+
+
+def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
+    for name, rows in tables.items():
+        connection.register(f"given_{name}", rows)
+        connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS FROM given_{name}")
+        connection.unregister(f"given_{name}")
+
+
 def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     # DuckDB exports instants in the session zone and Iceberg accepts only UTC.
     connection.execute("SET TimeZone = 'UTC'")
@@ -513,6 +569,9 @@ def _prepare(connection: duckdb.DuckDBPyConnection) -> None:
     for name, value in QUALITY_THRESHOLDS.items():
         connection.execute(f"SET VARIABLE {name} = {value}::BIGINT")
     connection.execute(_statement("redact"))
+    register_feature_registry(connection)
+    without_column = ", ".join(f"'{target}'" for target in (*LABEL_TARGETS, UNREAD))
+    connection.execute(f"SET VARIABLE feature_targets_without_column = [{without_column}]")
 
 
 def _statement(name: str) -> str:
@@ -556,7 +615,11 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         "environment variables",
     )
     parser.add_argument("--mode", choices=("incremental", "backfill"), default="incremental")
-    parser.add_argument("--metrics", action="store_true", help="publish PendingRuns to CloudWatch")
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="publish PendingRuns and, after a run, UnknownFeaturePatterns to CloudWatch",
+    )
     arguments = parser.parse_args(argv)
     on_s3 = arguments.landing.startswith("s3://")
     if not on_s3 and not Path(arguments.landing).is_dir():
@@ -574,6 +637,7 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in exclude]
 
     remaining = len(todo)
+    unknown_feature_patterns = None
     try:
         if not todo:
             print("nothing pending")
@@ -590,13 +654,14 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
                     now=lambda: datetime.now(UTC),
                 )
             remaining = 0
+            unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
     except (LandingContractError, SilverSchemaError) as error:
         print(f"Silver run refused: {error}", file=sys.stderr)
         return 1
     finally:
         if arguments.metrics:
-            _publish_pending(cloudwatch_client, remaining)
+            _publish_metrics(cloudwatch_client, remaining, unknown_feature_patterns)
     return 0
 
 
@@ -621,18 +686,33 @@ def _report(result: ProcessResult) -> None:
         "listing_event",
         PROPERTY_GROUP_TABLE,
         "listing_price",
+        "feature_pattern",
+        "listing_feature_label",
     ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
+    print(f"unknown feature patterns: {result.unknown_feature_patterns}")
 
 
-def _publish_pending(cloudwatch_client, remaining: int) -> None:
+def _publish_metrics(
+    cloudwatch_client, remaining: int, unknown_feature_patterns: int | None
+) -> None:
+    """Publish PendingRuns, and UnknownFeaturePatterns when a run computed it.
+
+    A run with nothing pending computed nothing, so it leaves the last count standing instead of
+    publishing a zero it did not measure.
+    """
     if cloudwatch_client is None:
         import boto3
 
         cloudwatch_client = boto3.client("cloudwatch")
+    metrics = {"PendingRuns": remaining}
+    if unknown_feature_patterns is not None:
+        metrics["UnknownFeaturePatterns"] = unknown_feature_patterns
     cloudwatch_client.put_metric_data(
         Namespace=METRICS_NAMESPACE,
-        MetricData=[{"MetricName": "PendingRuns", "Value": remaining, "Unit": "Count"}],
+        MetricData=[
+            {"MetricName": name, "Value": value, "Unit": "Count"} for name, value in metrics.items()
+        ],
     )
 
 

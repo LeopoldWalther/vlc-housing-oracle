@@ -112,6 +112,9 @@ class TestSilverCli(unittest.TestCase):
         self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_property_group: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_price: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^feature_pattern: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^listing_feature_label: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^unknown feature patterns: 1$")
 
     def test_a_second_run_finds_nothing_pending(self) -> None:
         self.run_cli("--landing", str(self.landing), "--catalog", "test")
@@ -134,6 +137,9 @@ class TestSilverCli(unittest.TestCase):
         self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_property_group: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_price: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^feature_pattern: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^listing_feature_label: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^unknown feature patterns: 1$")
 
     def test_a_missing_landing_directory_is_a_usage_error(self) -> None:
         completed = self.run_cli("--landing", str(self.root / "absent"), "--catalog", "test")
@@ -184,8 +190,26 @@ class TestSilverCli(unittest.TestCase):
         metric = cloudwatch.published[0]
         self.assertEqual("vlc-housing-silver", metric["Namespace"])
         self.assertEqual(
-            [("PendingRuns", 0)],
-            [(d["MetricName"], d["Value"]) for d in metric["MetricData"]],
+            [("PendingRuns", 0, "Count"), ("UnknownFeaturePatterns", 1, "Count")],
+            [(d["MetricName"], d["Value"], d["Unit"]) for d in metric["MetricData"]],
+        )
+        self.assertEqual(1, len(cloudwatch.published))
+
+    def test_a_run_with_nothing_pending_publishes_the_pending_runs_alone(self) -> None:
+        arguments = ("--landing", str(self.landing), "--catalog", "test", "--metrics")
+        self.run_main(*arguments, cloudwatch_client=FakeCloudWatch())
+        cloudwatch = FakeCloudWatch()
+
+        code, output = self.run_main(*arguments, cloudwatch_client=cloudwatch)
+
+        self.assertEqual(0, code)
+        self.assertNotIn("unknown feature patterns", output)
+        self.assertEqual(
+            [[("PendingRuns", 0)]],
+            [
+                [(d["MetricName"], d["Value"]) for d in call["MetricData"]]
+                for call in cloudwatch.published
+            ],
         )
 
     def test_a_refused_run_publishes_its_pending_runs(self) -> None:

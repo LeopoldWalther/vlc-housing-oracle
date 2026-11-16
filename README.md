@@ -7,9 +7,12 @@ time-on-market, and market dynamics.
 
 > **Status:** Silver is implemented and follows landing v3: a landing commit queues a run in AWS,
 > and `python -m src.silver.rebuild --landing <dir-or-s3> --catalog <name>` processes the runs its
-> ingest log does not hold yet into nine Iceberg tables ([runbook](docs/silver-rebuild.md)).
-> Among them are a price history per listing and two tables of inferred labels: quality flags,
-> and property groups that put listings which are certainly the same property into one group.
+> ingest log does not hold yet into eleven Iceberg tables ([runbook](docs/silver-rebuild.md)).
+> Among them are a price history per listing and three tables of inferred labels: quality flags,
+> property groups that put listings which are certainly the same property into one group, and
+> labels read from the portal's feature list (let with tenants, bare ownership, furnishing). A
+> further table lists every feature wording with the column that carries it, so that a wording
+> nobody has read yet raises an alarm.
 > Gold and models are not built yet.
 
 ## Architecture

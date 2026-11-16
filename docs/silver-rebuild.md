@@ -20,11 +20,14 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing` `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all four, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
-the CloudWatch namespace `vlc-housing-silver`; the AWS task always passes it.
+the CloudWatch namespace `vlc-housing-silver`; the AWS task always passes it. A run that
+processed something publishes `UnknownFeaturePatterns` in the same call: the feature wordings of
+Silver that are not in the registry. A run with nothing pending computed nothing and publishes
+`PendingRuns` alone.
 
 A run prints, for example:
 
@@ -41,6 +44,9 @@ listing_quality: snapshot <snapshot-id>
 listing_event: snapshot <snapshot-id>
 listing_property_group: snapshot <snapshot-id>
 listing_price: snapshot <snapshot-id>
+feature_pattern: snapshot <snapshot-id>
+listing_feature_label: snapshot <snapshot-id>
+unknown feature patterns: 0
 ```
 
 | Exit code | Meaning |
@@ -107,6 +113,8 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_detail` | `observed_date` | detail record | The history a listing recompute reads, so a night never rereads all of landing. No free text. |
 | `listing` | — | listing | Attributes of the newest detail record (`detail_observed_at`) plus `first_seen`, `last_seen`, `days_observed` over all observations. A listing seen only in search results has null attributes. |
 | `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r2'` (Spanish phone numbers, with or without `+34`, `0034` or a `34` glued to the number → `[phone]`; honorific plus a capitalised or all-capitals word → `[name]`). r2 added the glued `34` and the capitals to r1. A pattern change is `r3`, never an edit of `r2`. |
+| `feature_pattern` | — | feature wording | Every wording of `listing_text.features` with the number of listings that carry it, the column or label that carries what it says, and the listings that lack that value. A null `target` is a wording nobody has read yet. Private. See below. |
+| `listing_feature_label` | — | listing with a detail record | What the portal's features state: `is_tenant_occupied`, `is_bare_ownership`, `furnishing`. An inferred label. See below. |
 | `listing_quality` | — | listing with a detail record | Twelve boolean flags, one per plausibility and location rule. A flag is an inferred label and changes no value of `listing`. See below. |
 | `listing_property_group` | — | listing with a detail record | The `property_group_id` of the listings that are certainly the same property under rule `pg1`, with the group's size and completeness. An inferred label; no listing is dropped. See below. |
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
@@ -268,6 +276,70 @@ Join the table to `listing` on `source` and `source_listing_id`.
   in every run that processes something, in both modes: a late run can add a sighting inside any
   listing's history and split or join its periods.
 
+### `feature_pattern`
+
+The portal lists a listing's features as short strings. This table shows every wording of them,
+so that a fact the portal states and no column holds is noticed in the next run. The rule is
+`src/silver/sql/feature_pattern.sql`; the registry is `src/silver/feature_patterns.py`.
+
+- **A wording** is a feature string with every number replaced by `#`, trimmed and lower-cased
+  (`src/silver/sql/feature_wording.sql`): "80 m² construidos" and "125 m² construidos" are the
+  wording `# m² construidos`. A number may carry thousands and decimal separators.
+- **A target** is what carries the wording's meaning: a column of `listing`, one of the labels of
+  `listing_feature_label`, or `unread` for a meaning that no column carries yet.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `pattern` | `VARCHAR` | The wording |
+| `listings` | `INTEGER` | Distinct listings whose features hold the wording |
+| `target` | `VARCHAR` | The registry's target; null for a wording that is not in the registry |
+| `listings_target_missing` | `INTEGER` | Of those listings, the ones whose target column is null, `unknown` or an empty list; null when the target is null, a label or `unread` |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+Rows are ordered by `listings` descending, then `pattern`.
+
+- **A null `target` is work to do.** The run prints the count as `unknown feature patterns` and
+  publishes it as `UnknownFeaturePatterns`; above zero the alarm mails. Read the rows with a
+  null target, decide for each which column or label carries it, and add it to `KNOWN_PATTERNS`
+  with that target, or with `unread` when nothing carries it. A registry change needs no
+  `transformation_version` and no backfill: the next run that processes something recomputes
+  both tables whole.
+- **List a wording by digest when the leak guard refuses it.** A wording that contains a term
+  the leak guard forbids is never written in clear: put the SHA-256 of its UTF-8 bytes into
+  `KNOWN_PATTERN_DIGESTS` instead. Never change the leak guard to make a wording pass.
+- **`listings_target_missing` above zero** means the portal states the fact for those listings
+  and the column does not hold it. Its repair belongs to the acquisition side, which extracts
+  the columns; this repository only reports the count. A listing with a text row and no row in
+  `listing` counts as missing.
+- **`unread` wordings** are meanings the landing contract has no column for. They are reported to
+  the acquisition side with their counts.
+- **The table is private.** A wording that is not in the registry is text nobody has read, and
+  it could be typed by a person. Publish counts, and wordings of the registry only.
+
+### `listing_feature_label`
+
+Three labels that the features state and no column of `listing` holds. The rule is
+`src/silver/sql/listing_feature_label.sql`. Join the table to `listing` on `source` and
+`source_listing_id`; it has one row per row of `listing_text`.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `source`, `source_listing_id` | `VARCHAR` | The listing |
+| `is_tenant_occupied` | `BOOLEAN` | A feature says the home is let, with tenants; never null |
+| `is_bare_ownership` | `BOOLEAN` | A feature says the sale is of the bare ownership; never null |
+| `furnishing` | `VARCHAR` | `furnished`, `kitchen_only` or `unfurnished`; null when no feature states it or two features state different values |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+- **A label is the portal's statement,** not a verified fact. It is an inferred label beside the
+  facts of `listing` and changes no value there.
+- **False means "not stated".** A listing without the wording has false, also a listing whose
+  feature list is empty.
+- **The labels do not depend on the operation.** Filter by `listing.operation` when a question
+  is about sales or about rentals only.
+- Both feature tables are recomputed from Silver's whole `listing` and `listing_text` and
+  replaced whole in every run that processes something, in both modes: a run can change any
+  listing's features and with them the counts of any wording.
+
 ## Running in AWS
 
 `infra/silver/` defines everything; the account-specific values live in git-ignored `*.tfvars`.
@@ -366,6 +438,7 @@ finishes, so both see the same commits. Compare counts only; never print rows of
 | Task-failed rule | A Silver task stopped with a non-zero exit code or without its container exiting. | Read `/ecs/vlc-housing-silver`. Exit 1 names the refused table and run. |
 | `vlc-housing-silver-dead-letter` | A message reached the dead-letter queue: three starts in a row failed. | See below. |
 | `vlc-housing-silver-pending-runs` | `PendingRuns` stayed above 0 for six hours. | Check the consumer log `/aws/lambda/vlc-housing-silver-consumer` and the last task log. |
+| `vlc-housing-silver-unknown-feature-patterns` | A run found a feature wording that is not in the registry. | Read `feature_pattern` for rows with a null `target` and add them to `src/silver/feature_patterns.py` (see [`feature_pattern`](#feature_pattern)). The alarm clears with the first run after the image with the new registry is deployed; runs with nothing pending leave its state unchanged. |
 
 ### The dead-letter queue
 
@@ -385,8 +458,10 @@ to four days; disable `consumer_enabled` as well to stop the consumer from readi
 
 ### Cost
 
-About $0.37/month for the AWS components, dominated by Fargate minutes (1 vCPU, 2 GB, ARM64, a
-few minutes a day) and the task's public IPv4 address. A NAT gateway (≈ $35/month) is avoided by
+About $0.77/month for the AWS components: $0.37 dominated by Fargate minutes (1 vCPU, 2 GB,
+ARM64, a few minutes a day) and the task's public IPv4 address, and about $0.40 for the custom
+metric `UnknownFeaturePatterns` and its alarm. Without that metric and alarm the check costs
+nothing and is read from the task log instead. A NAT gateway (≈ $35/month) is avoided by
 the public IP; the cheaper alternative is running the command on a laptop at $0, without the
 automation. The full estimate is in the FEATURE-004 plan.
 
