@@ -217,6 +217,24 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             with self.subTest(table=name):
                 self.assertEqual(schema, catalog.load_table(f"{NAMESPACE}.{name}").schema())
 
+    def test_tables_that_predate_listing_price_gain_it_equal_to_a_backfill(self) -> None:
+        catalog = self.catalog()
+        ordered = sorted(self.commits, key=lambda c: (c.run_started_at, c.run_id))
+        self.process(catalog, ordered[: len(ordered) // 2])
+        catalog.drop_table(f"{NAMESPACE}.listing_price")
+        schemas = {
+            name: catalog.load_table(f"{NAMESPACE}.{name}").schema()
+            for name in WRITTEN_TABLES
+            if name != "listing_price"
+        }
+
+        self.process(catalog, ordered)
+
+        self.assertEqual(self.backfill(), self.row_sets(catalog))
+        for name, schema in schemas.items():
+            with self.subTest(table=name):
+                self.assertEqual(schema, catalog.load_table(f"{NAMESPACE}.{name}").schema())
+
     def test_tables_that_predate_listing_property_group_gain_it_equal_to_a_backfill(self) -> None:
         catalog = self.catalog()
         ordered = sorted(self.commits, key=lambda c: (c.run_started_at, c.run_id))
