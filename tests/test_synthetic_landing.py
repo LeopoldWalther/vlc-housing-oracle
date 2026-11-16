@@ -314,6 +314,20 @@ class TestGenerateLandingV3(unittest.TestCase):
             0, v3_count(self.root, "listing_detail", "source_listing_id = 'syn-no-detail'")
         )
 
+    def test_a_price_that_returns_is_present(self) -> None:
+        with utc_connection() as connection:
+            cards = connection.sql(
+                f"SELECT observed_date, price_eur FROM read_parquet("
+                f"'{self.root}/observation/*/*/part-0.parquet', hive_partitioning = false) "
+                "WHERE source_listing_id = 'syn-returned' ORDER BY observed_at"
+            ).fetchall()
+
+        self.assertEqual([price for _, price in cards], [400_000, 380_000, 400_000])
+        self.assertEqual(3, len({day for day, _ in cards}))
+        self.assertEqual(
+            0, v3_count(self.root, "listing_detail", "source_listing_id = 'syn-returned'")
+        )
+
     def test_another_seed_gives_other_filler(self) -> None:
         with tempfile.TemporaryDirectory() as other:
             generate_landing_v3(Path(other), seed=2)
