@@ -323,7 +323,7 @@ technical_plan:
         Delete the directory src/gold (the package file, property_group.py, sql/pairs.sql) and the
         three Gold test files. Nothing else changes; documentation follows in task 3.1. The rule
         stays reachable for task 3.2 at the commit before the merge to main.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
