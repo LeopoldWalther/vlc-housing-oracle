@@ -1,6 +1,6 @@
 # FEATURE-009 — Listing price history
 
-**Status:** 🔵 Planned · **Effort:** S (~6h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** S (~6h) · **Priority:** High
 **Branch root:** `feature/listing-price-history` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-009.md`).

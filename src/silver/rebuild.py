@@ -125,6 +125,23 @@ EVENT_OBSERVATION_COLUMNS = (
     "run_id",
 )
 
+# The columns of Silver observation and listing_detail that the listing_price rule reads.
+PRICE_OBSERVATION_COLUMNS = (
+    "source",
+    "source_listing_id",
+    "observed_at",
+    "price_eur",
+    "prev_price_eur",
+    "is_empty_card",
+)
+PRICE_DETAIL_COLUMNS = (
+    "source",
+    "source_listing_id",
+    "observed_at",
+    "price_eur",
+    "prev_price_eur",
+)
+
 
 @dataclass(frozen=True)
 class ProcessResult:
@@ -440,6 +457,23 @@ def listing_events(
         connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS FROM event_{name}")
         connection.unregister(f"event_{name}")
     return connection.sql(_statement("listing_event")).to_arrow_table()
+
+
+def listing_prices(
+    connection: duckdb.DuckDBPyConnection, observation: pa.Table, listing_detail: pa.Table
+) -> pa.Table:
+    """The ``listing_price`` rows of every listing, from Silver's whole observation and detail.
+
+    The given tables, which need ``PRICE_OBSERVATION_COLUMNS`` and ``PRICE_DETAIL_COLUMNS``,
+    replace the temporary tables ``silver_observation`` and ``silver_listing_detail``: call this
+    after every other statement of the session that reads them.
+    """
+    _prepare(connection)
+    for name, rows in (("observation", observation), ("listing_detail", listing_detail)):
+        connection.register(f"price_{name}", rows)
+        connection.execute(f"CREATE OR REPLACE TEMP TABLE silver_{name} AS FROM price_{name}")
+        connection.unregister(f"price_{name}")
+    return connection.sql(_statement("listing_price")).to_arrow_table()
 
 
 def listing_quality(connection: duckdb.DuckDBPyConnection, listing: pa.Table) -> pa.Table:
