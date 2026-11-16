@@ -339,7 +339,7 @@ technical_plan:
         miss for every value. With --results it writes number, the two expected labels and the
         two model labels per text, and no description. Without an injected labeller it builds
         BedrockTextLabeler from a boto3 bedrock-runtime client.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2.0
       depends_on: ["1.4"]
