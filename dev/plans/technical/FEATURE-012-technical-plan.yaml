@@ -268,7 +268,7 @@ technical_plan:
         A ClientError whose code is ThrottlingException is retried after 1, 2 and 4 seconds
         through the injected sleep (four attempts); the fourth and every other error propagate.
         requirements.txt pins boto3 exactly to the version pyiceberg[glue] resolves today.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.3"]
