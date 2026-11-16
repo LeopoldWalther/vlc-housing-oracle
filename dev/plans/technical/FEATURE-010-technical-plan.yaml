@@ -282,7 +282,7 @@ technical_plan:
         Create src/silver/sql/feature_pattern.sql and feature_patterns(connection, listing,
         listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement gives the table
         of the conventions. Do not add the table to SILVER_TABLES yet.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
