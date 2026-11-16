@@ -1,6 +1,6 @@
 # FEATURE-009 — Listing price history
 
-**Status:** 🟡 In progress · **Effort:** S (~6h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** S (~6h) · **Priority:** High
 **Branch root:** `feature/listing-price-history` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-009.md`).
@@ -109,7 +109,7 @@ stale for 17% of sale listings.
 
 ### Phase 1 — Price periods
 
-- [ ] **1.1 Periods from sightings.**
+- [x] **1.1 Periods from sightings.**
     - RED: one price over three days gives one row with three sightings; a change gives two
         rows; A, B, A gives three; empty cards and cards without a price are ignored; a listing
         with a detail record and no card has one period; a card and a detail record at one
@@ -117,24 +117,24 @@ stale for 17% of sale listings.
         instant give the lower price first; exactly one row per listing is current. Fails
         because the function does not exist.
     - GREEN: `listing_price.sql` and `listing_prices()` in `src/silver/rebuild.py`.
-- [ ] **1.2 Previous prices.**
+- [x] **1.2 Previous prices.**
     - RED: `previous_price_eur` is the price of the period before and null for period 1;
         `declared_previous_price_eur` is the `prev_price_eur` of the period's first sighting,
         card or detail record, and null without one. Fails on the missing columns.
 
 ### Phase 2 — The run writes the table
 
-- [ ] **2.1 Pipeline.** RED: after a backfill of the synthetic landing the catalog holds
+- [x] **2.1 Pipeline.** RED: after a backfill of the synthetic landing the catalog holds
     `listing_price`; stepwise commits give the same rows; a catalog that predates the table
     gains it without a backfill.
-- [ ] **2.2 Synthetic scenario and report.** RED: the generator holds a listing that returns to
+- [x] **2.2 Synthetic scenario and report.** RED: the generator holds a listing that returns to
     its first price (a reduction exists already); the command prints
     `listing_price: snapshot <id>`.
 
 ### Phase 3 — Documentation and operation
 
-- [ ] **3.1 Documentation.** `docs/silver-rebuild.md` (the table and its reading), `README.md`.
-- [ ] **3.2 Deployment and first run (operator, with approval).** New image, then counts only:
+- [x] **3.1 Documentation.** `docs/silver-rebuild.md` (the table and its reading), `README.md`.
+- [x] **3.2 Deployment and first run (operator, with approval).** New image, then counts only:
     periods, changes and current rows against the same rule in Athena, and the task duration.
     Recorded in `dev/plans/implementations/FEATURE-009-listing-price-history.md`.
 
@@ -177,14 +177,14 @@ $0/month — no resources added or changed beyond a new task-definition revision
 
 ## Success criteria
 
-- [ ] Every listing with a price sighting has its periods in `listing_price` and exactly one
+- [x] Every listing with a price sighting has its periods in `listing_price` and exactly one
     current row.
-- [ ] Any sequence of commits and a backfill give the same rows.
-- [ ] The first real run's counts equal the same rule in Athena.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak and workflow checks pass
-- [ ] The table is documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] Any sequence of commits and a backfill give the same rows.
+- [x] The first real run's counts equal the same rule in Athena.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak and workflow checks pass
+- [x] The table is documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -203,3 +203,7 @@ $0/month — no resources added or changed beyond a new task-definition revision
     (M1); the table joins `SILVER_TABLES` and the run reads Silver once before the event and
     price rules (M2); the declared previous price comes from the period's first sighting of
     either kind (M3). Implementation starts after FEATURE-013 is merged.
+- **2026-11-16** — Task 3.2: the image of merge commit `9be095f` was deployed, and the first
+    run wrote the table: 27,582 price periods of 23,169 listings, every count equal to the same
+    rule in Athena. See the [implementation note](implementations/FEATURE-009-listing-price-history.md).
+    Feature complete.
