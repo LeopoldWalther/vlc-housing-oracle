@@ -153,6 +153,29 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             [(1, 400_000, None, False), (2, 380_000, 400_000, False), (3, 400_000, 380_000, True)],
         )
 
+    def test_the_synthetic_features_give_their_labels_and_one_unknown_wording(self) -> None:
+        catalog = self.catalog()
+        result = self.process(catalog, self.commits, mode="backfill")
+
+        labels = {
+            row["source_listing_id"]: row
+            for row in catalog.load_table(f"{NAMESPACE}.listing_feature_label")
+            .scan()
+            .to_arrow()
+            .to_pylist()
+        }
+        patterns = catalog.load_table(f"{NAMESPACE}.feature_pattern").scan().to_arrow().to_pylist()
+
+        self.assertEqual(labels["syn-furnished"]["furnishing"], "furnished")
+        self.assertFalse(labels["syn-furnished"]["is_tenant_occupied"])
+        self.assertTrue(labels["syn-tenant"]["is_tenant_occupied"])
+        self.assertIsNone(labels["syn-tenant"]["furnishing"])
+        self.assertEqual(
+            [(row["pattern"], row["listings"]) for row in patterns if row["target"] is None],
+            [("vistas al mar desde # miradores", 1)],
+        )
+        self.assertEqual(result.unknown_feature_patterns, 1)
+
     def test_one_at_a_time_three_at_a_time_and_all_at_once_agree(self) -> None:
         expected = self.backfill()
 

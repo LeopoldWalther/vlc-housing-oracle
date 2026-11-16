@@ -509,7 +509,7 @@ technical_plan:
         the listing_price line and then `unknown feature patterns: <n>`; with --metrics a run
         that processed something publishes UnknownFeaturePatterns beside PendingRuns in the same
         call, and a run with nothing pending publishes PendingRuns alone.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["3.1"]
