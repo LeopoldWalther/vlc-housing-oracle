@@ -145,7 +145,7 @@ technical_plan:
       description: |
         Add previous_price_eur and declared_previous_price_eur to the statement, in the column
         order of the conventions.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["1.1"]
