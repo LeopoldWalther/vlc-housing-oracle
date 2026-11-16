@@ -20,7 +20,7 @@ speculative roadmap: add a row only when its top-level plan exists.
 | FEATURE-010 | [Labels from listing features, and a check for unread features](FEATURE-010-feature-labels.md) | 🔵 Planned | `feature/feature-labels` | M (~8h) | High | architect |
 | FEATURE-011 | [Listing location from coordinates: municipality, district and census section](FEATURE-011-listing-location.md) | 🔵 Planned | `feature/listing-location` | M (~10h) | Medium | architect |
 | FEATURE-012 | [Labels read from the description by a language model](FEATURE-012-text-labels.md) | 🔵 Planned | `feature/text-labels` | L (~18h) | Medium | architect |
-| FEATURE-013 | [Property groups move from Gold to Silver](FEATURE-013-property-groups-in-silver.md) — implemented first, before FEATURE-009 to FEATURE-012 | 🔵 Planned | `feature/property-groups-in-silver` | M (~6h) | High | architect |
+| FEATURE-013 | [Property groups move from Gold to Silver](FEATURE-013-property-groups-in-silver.md) — implemented first, before FEATURE-009 to FEATURE-012 | 🟡 In progress | `feature/property-groups-in-silver` | M (~6h) | High | architect |
 
 **Status legend:** 🔵 Planned · 🟡 In progress · 🟢 Complete · 🔴 Blocked · ⚪ Superseded
 

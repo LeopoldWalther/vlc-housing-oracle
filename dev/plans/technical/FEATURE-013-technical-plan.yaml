@@ -86,7 +86,7 @@ technical_plan:
         property_group_listing. Create tests/test_silver_property_pairs.py as a copy of
         tests/test_gold_property_pairs.py that imports from src.silver.property_group; every case
         and expectation stays. Do not touch src/gold or its tests.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: []
