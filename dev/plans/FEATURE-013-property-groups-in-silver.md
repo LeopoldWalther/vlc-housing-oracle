@@ -1,6 +1,6 @@
 # FEATURE-013 — Property groups move from Gold to Silver
 
-**Status:** 🟡 In progress · **Effort:** M (~6h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** M (~6h) · **Priority:** High
 **Branch root:** `feature/property-groups-in-silver` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-013.md`).
@@ -106,29 +106,29 @@ is as old as its last manual build.
 
 ### Phase 1 — The rule under Silver
 
-- [ ] **1.1 The pair rule.** RED: the pair tests, copied from the Gold tests, import
+- [x] **1.1 The pair rule.** RED: the pair tests, copied from the Gold tests, import
     `duplicate_pairs` from `src.silver.property_group`; they fail because the module does not
     exist. GREEN: the function, the thresholds as named constants and the copied statement.
-- [ ] **1.2 Groups and rows.** RED: the group and row tests import `group_of` and
+- [x] **1.2 Groups and rows.** RED: the group and row tests import `group_of` and
     `property_group_rows` and expect the Silver columns with `transformation_version`; they fail
     on the missing names.
 
 ### Phase 2 — The run writes the table
 
-- [ ] **2.1 Pipeline.** RED: after a backfill of the synthetic landing the catalog holds
+- [x] **2.1 Pipeline.** RED: after a backfill of the synthetic landing the catalog holds
     `listing_property_group` with the synthetic duplicate in one group; stepwise commits give
     the same rows; a catalog that predates the table gains it without a backfill; a table
     overwritten with every listing as its own group is corrected by the next run.
-- [ ] **2.2 Report.** RED: the command prints `listing_property_group: snapshot <id>`.
-- [ ] **2.3 Remove the Gold code.** Delete `src/gold/` and the three Gold test files.
+- [x] **2.2 Report.** RED: the command prints `listing_property_group: snapshot <id>`.
+- [x] **2.3 Remove the Gold code.** Delete `src/gold/` and the three Gold test files.
     Validation: the suite is green and no file under `src` or `tests` names `src.gold`.
 
 ### Phase 3 — Operation
 
-- [ ] **3.1 Documentation.** The table's section in `docs/silver-rebuild.md` takes over the rule,
+- [x] **3.1 Documentation.** The table's section in `docs/silver-rebuild.md` takes over the rule,
     the columns and the limits; `docs/gold-property-group.md` is deleted; `README.md` and the
     findings name the table under Silver and no Gold dataset.
-- [ ] **3.2 Deployment, first run and the Gold object (operator, with approval).** Deploy. After
+- [x] **3.2 Deployment, first run and the Gold object (operator, with approval).** Deploy. After
     the first run, apply the rule of the commit before the merge in memory to the current
     `listing` snapshot and compare it with the Silver table, as counts only: rows, groups of two
     or more, listings in a group, incomplete groups, largest group, and the number of listings
@@ -182,16 +182,16 @@ $0/month — no resources added or changed beyond a new task-definition revision
 
 ## Success criteria
 
-- [ ] Every Silver run that processes something writes `listing_property_group`, one row per
+- [x] Every Silver run that processes something writes `listing_property_group`, one row per
     listing with a detail record.
-- [ ] Any sequence of commits and a backfill give the same rows.
-- [ ] The first real run equals the rule of the commit before the merge, applied to the same
+- [x] Any sequence of commits and a backfill give the same rows.
+- [x] The first real run equals the rule of the commit before the merge, applied to the same
     `listing` snapshot, in every recorded count.
-- [ ] No Gold code, test, document or object of the dataset remains.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak and workflow checks pass
-- [ ] The table, its rule and its limits are documented under Silver
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] No Gold code, test, document or object of the dataset remains.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak and workflow checks pass
+- [x] The table, its rule and its limits are documented under Silver
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -213,3 +213,8 @@ $0/month — no resources added or changed beyond a new task-definition revision
     test needs no generator change (M2); the tests that enumerate Silver's tables and one read
     of `listing` for both label rules (M3); the comparison runs in memory after the first run,
     on one snapshot (M4). Task 3.3 is folded into 3.2.
+- **2026-11-16** — Task 3.2: the image of merge commit `9be095f` was deployed, and the first
+    run wrote the table. It equals the rule of the commit before the merge on 23,159 listings
+    with no difference; the Gold object was deleted with the user's approval. See the
+    [implementation note](implementations/FEATURE-013-property-groups-in-silver.md). Feature
+    complete.
