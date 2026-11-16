@@ -521,6 +521,19 @@ def feature_patterns(
     return connection.sql(_statement("feature_pattern")).to_arrow_table()
 
 
+def listing_feature_labels(
+    connection: duckdb.DuckDBPyConnection, listing_text: pa.Table
+) -> pa.Table:
+    """The ``listing_feature_label`` rows: one per row of Silver's ``listing_text``.
+
+    The given table, which needs the key and ``features``, replaces the temporary table
+    ``silver_listing_text``: call this after every other statement of the session that reads it.
+    """
+    _prepare(connection)
+    _replace_silver(connection, {"listing_text": listing_text})
+    return connection.sql(_statement("listing_feature_label")).to_arrow_table()
+
+
 def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
     for name, rows in tables.items():
         connection.register(f"given_{name}", rows)
