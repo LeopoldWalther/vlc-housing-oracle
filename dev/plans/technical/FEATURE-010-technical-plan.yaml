@@ -224,7 +224,7 @@ technical_plan:
         `registry`, `registry_digests` and `furnishing_values` copied unchanged. In
         src/silver/rebuild.py, _prepare() calls register_feature_registry(connection).
         feature_patterns.py does not import src.silver.rebuild.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: []
@@ -282,7 +282,7 @@ technical_plan:
         Create src/silver/sql/feature_pattern.sql and feature_patterns(connection, listing,
         listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement gives the table
         of the conventions. Do not add the table to SILVER_TABLES yet.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.1"]
@@ -340,7 +340,7 @@ technical_plan:
         listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement returns the
         columns of the conventions except furnishing. A label is true when one of the listing's
         wordings has that label as its registry target.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["1.2"]
@@ -392,7 +392,7 @@ technical_plan:
         Add furnishing to the statement, in the column order of the conventions: the
         label_value of the listing's furnishing wording, null without one and null when its
         wordings give two different values.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.1"]
@@ -445,7 +445,7 @@ technical_plan:
         tables with the existing ones for the one write_silver_tables call. Update the comment
         above the call: a run can change any listing's features and with them the counts of
         any wording.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["2.2"]
@@ -509,7 +509,7 @@ technical_plan:
         the listing_price line and then `unknown feature patterns: <n>`; with --metrics a run
         that processed something publishes UnknownFeaturePatterns beside PendingRuns in the same
         call, and a run with nothing pending publishes PendingRuns alone.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["3.1"]
@@ -573,7 +573,7 @@ technical_plan:
         "ignore", alarm action the existing topic. Its description says: a feature wording is
         not in the registry; read feature_pattern for rows with a null target and add them to
         src/silver/feature_patterns.py. Nothing is applied in this task.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["3.2"]
@@ -613,7 +613,7 @@ technical_plan:
         incremental-mode description, and the alarm the alarms section with what to do when it
         mails. The cost section gains the metric and the alarm. README.md: the status text
         counts two more Iceberg tables and names the feature labels.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["4.1"]

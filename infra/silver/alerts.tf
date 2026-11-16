@@ -127,3 +127,19 @@ resource "aws_cloudwatch_metric_alarm" "pending_runs" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
+
+# A run that processed something publishes the count; a run with nothing pending publishes
+# nothing, so missing data keeps the last state instead of clearing or raising the alarm.
+resource "aws_cloudwatch_metric_alarm" "unknown_feature_patterns" {
+  alarm_name          = "${local.name}-unknown-feature-patterns"
+  alarm_description   = "A feature wording is not in the registry. Read feature_pattern for rows with a null target and add them to src/silver/feature_patterns.py."
+  namespace           = local.name
+  metric_name         = "UnknownFeaturePatterns"
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "ignore"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}

@@ -328,6 +328,36 @@ class TestGenerateLandingV3(unittest.TestCase):
             0, v3_count(self.root, "listing_detail", "source_listing_id = 'syn-returned'")
         )
 
+    def test_listings_with_feature_wordings_are_present(self) -> None:
+        with utc_connection() as connection:
+            texts = connection.sql(
+                f"SELECT source_listing_id, features FROM read_parquet("
+                f"'{self.root}/listing_text/*/*/part-0.parquet', hive_partitioning = false) "
+                "WHERE source_listing_id IN ('syn-furnished', 'syn-tenant', 'syn-novel-feature') "
+                "ORDER BY source_listing_id"
+            ).fetchall()
+            details = connection.sql(
+                f"SELECT count(*), count(latitude), count(DISTINCT operation), min(operation) "
+                f"FROM read_parquet('{self.root}/listing_detail/*/*/part-0.parquet', "
+                "hive_partitioning = false, union_by_name = true) "
+                "WHERE source_listing_id IN ('syn-furnished', 'syn-tenant', 'syn-novel-feature')"
+            ).fetchone()
+
+        self.assertEqual(
+            texts,
+            [
+                ("syn-furnished", ["Amueblado y cocina equipada"]),
+                ("syn-novel-feature", ["Vistas al mar desde 2 miradores"]),
+                ("syn-tenant", ["Alquilada, con inquilinos"]),
+            ],
+        )
+        self.assertEqual(details, (3, 0, 1, "sale"))
+        for listing_id, _ in texts:
+            with self.subTest(listing=listing_id):
+                self.assertEqual(
+                    1, v3_count(self.root, "observation", f"source_listing_id = '{listing_id}'")
+                )
+
     def test_another_seed_gives_other_filler(self) -> None:
         with tempfile.TemporaryDirectory() as other:
             generate_landing_v3(Path(other), seed=2)

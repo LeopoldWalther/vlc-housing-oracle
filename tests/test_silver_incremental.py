@@ -153,6 +153,29 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             [(1, 400_000, None, False), (2, 380_000, 400_000, False), (3, 400_000, 380_000, True)],
         )
 
+    def test_the_synthetic_features_give_their_labels_and_one_unknown_wording(self) -> None:
+        catalog = self.catalog()
+        result = self.process(catalog, self.commits, mode="backfill")
+
+        labels = {
+            row["source_listing_id"]: row
+            for row in catalog.load_table(f"{NAMESPACE}.listing_feature_label")
+            .scan()
+            .to_arrow()
+            .to_pylist()
+        }
+        patterns = catalog.load_table(f"{NAMESPACE}.feature_pattern").scan().to_arrow().to_pylist()
+
+        self.assertEqual(labels["syn-furnished"]["furnishing"], "furnished")
+        self.assertFalse(labels["syn-furnished"]["is_tenant_occupied"])
+        self.assertTrue(labels["syn-tenant"]["is_tenant_occupied"])
+        self.assertIsNone(labels["syn-tenant"]["furnishing"])
+        self.assertEqual(
+            [(row["pattern"], row["listings"]) for row in patterns if row["target"] is None],
+            [("vistas al mar desde # miradores", 1)],
+        )
+        self.assertEqual(result.unknown_feature_patterns, 1)
+
     def test_one_at_a_time_three_at_a_time_and_all_at_once_agree(self) -> None:
         expected = self.backfill()
 
@@ -241,6 +264,26 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             name: catalog.load_table(f"{NAMESPACE}.{name}").schema()
             for name in WRITTEN_TABLES
             if name != "listing_price"
+        }
+
+        self.process(catalog, ordered)
+
+        self.assertEqual(self.backfill(), self.row_sets(catalog))
+        for name, schema in schemas.items():
+            with self.subTest(table=name):
+                self.assertEqual(schema, catalog.load_table(f"{NAMESPACE}.{name}").schema())
+
+    def test_tables_that_predate_the_feature_tables_gain_them_equal_to_a_backfill(self) -> None:
+        feature_tables = ("feature_pattern", "listing_feature_label")
+        catalog = self.catalog()
+        ordered = sorted(self.commits, key=lambda c: (c.run_started_at, c.run_id))
+        self.process(catalog, ordered[: len(ordered) // 2])
+        for name in feature_tables:
+            catalog.drop_table(f"{NAMESPACE}.{name}")
+        schemas = {
+            name: catalog.load_table(f"{NAMESPACE}.{name}").schema()
+            for name in WRITTEN_TABLES
+            if name not in feature_tables
         }
 
         self.process(catalog, ordered)

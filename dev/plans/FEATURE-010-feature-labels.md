@@ -1,6 +1,6 @@
 # FEATURE-010 — Labels from listing features, and a check for unread features
 
-**Status:** 🔵 Planned · **Effort:** M (~9h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~9h) · **Priority:** High
 **Branch root:** `feature/feature-labels` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-010.md`).
