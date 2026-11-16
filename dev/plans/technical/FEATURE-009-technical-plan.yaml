@@ -197,7 +197,7 @@ technical_plan:
         returns the rows of listing_event and listing_price; both written in the existing
         write_silver_tables call. Update the comment above the call: a run can also add a
         sighting to any listing's history.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.2"]

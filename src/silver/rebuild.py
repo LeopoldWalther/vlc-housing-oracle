@@ -49,6 +49,7 @@ SILVER_TABLES = (
     "listing_quality",
     "listing_text",
     "listing_event",
+    "listing_price",
 )
 
 # The columns of Silver listing that the listing_quality rules read.
@@ -240,16 +241,16 @@ def process_landing(
             run_started=run_started,
             properties=properties,
         )
-    # A run can retract or add events of any listing, move a municipality's centre and with it
-    # the flag of any listing, and join or split property groups of listings it did not touch,
-    # so these tables are recomputed and replaced whole; they read Silver after this run's days
-    # and listings are written.
+    # A run can retract or add events of any listing, add a sighting to any listing's price
+    # history, move a municipality's centre and with it the flag of any listing, and join or split
+    # property groups of listings it did not touch, so these tables are recomputed and replaced
+    # whole; they read Silver after this run's days and listings are written.
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
         {
             **_labels_from_silver(connection, catalog),
-            "listing_event": _events_from_silver(connection, catalog),
+            **_history_from_silver(connection, catalog),
         },
         properties,
         allow_new_columns=backfill,
@@ -417,16 +418,31 @@ def _labels_from_silver(
     }
 
 
-def _events_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:
-    """``listing_event`` over Silver's current walk and observation."""
-    walk, observation = (
-        _silver_columns(connection, catalog, name, columns)
-        for name, columns in (
-            ("walk", EVENT_WALK_COLUMNS),
-            ("observation", EVENT_OBSERVATION_COLUMNS),
-        )
+def _history_from_silver(
+    connection: duckdb.DuckDBPyConnection, catalog: Catalog
+) -> dict[str, pa.Table]:
+    """``listing_event`` and ``listing_price`` over one read of Silver's current day tables."""
+    # Read before either rule: each replaces temporary tables the read falls back to while the
+    # catalog has no such table, with its own columns only.
+    walk = _silver_columns(connection, catalog, "walk", EVENT_WALK_COLUMNS)
+    observation = _silver_columns(
+        connection,
+        catalog,
+        "observation",
+        (
+            *EVENT_OBSERVATION_COLUMNS,
+            *(name for name in PRICE_OBSERVATION_COLUMNS if name not in EVENT_OBSERVATION_COLUMNS),
+        ),
     )
-    return listing_events(connection, walk, observation)
+    listing_detail = _silver_columns(connection, catalog, "listing_detail", PRICE_DETAIL_COLUMNS)
+    return {
+        "listing_event": listing_events(
+            connection, walk, observation.select(EVENT_OBSERVATION_COLUMNS)
+        ),
+        "listing_price": listing_prices(
+            connection, observation.select(PRICE_OBSERVATION_COLUMNS), listing_detail
+        ),
+    }
 
 
 def _silver_columns(
