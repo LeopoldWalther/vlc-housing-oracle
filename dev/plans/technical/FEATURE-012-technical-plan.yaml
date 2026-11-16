@@ -119,7 +119,7 @@ technical_plan:
         inference). CLAUDE.md: the Target Architecture section names the enrichment input in one
         short entry, and the sentence that nothing in the repository fetches or parses source
         pages stays as it is.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: []
