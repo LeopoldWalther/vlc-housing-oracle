@@ -276,7 +276,7 @@ technical_plan:
       description: |
         _report in src/silver/rebuild.py prints `listing_property_group: snapshot <id>` after the
         listing_event line.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.25
       depends_on: ["2.1"]

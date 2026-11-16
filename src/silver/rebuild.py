@@ -564,7 +564,13 @@ def _report(result: ProcessResult) -> None:
     for name in DAY_TABLES:
         print(f"{name}: {len(result.days[name])} days, snapshot {result.snapshot_ids.get(name)}")
     print(f"affected listings: {result.affected}")
-    for name in ("listing", "listing_text", "listing_quality", "listing_event"):
+    for name in (
+        "listing",
+        "listing_text",
+        "listing_quality",
+        "listing_event",
+        PROPERTY_GROUP_TABLE,
+    ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
 
 
