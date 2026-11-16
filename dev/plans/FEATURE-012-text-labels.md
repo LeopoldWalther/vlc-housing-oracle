@@ -1,6 +1,6 @@
 # FEATURE-012 — Labels read from the description by a language model
 
-**Status:** 🔵 Planned · **Effort:** L (~20h) · **Priority:** Medium
+**Status:** 🟡 In progress · **Effort:** L (~20h) · **Priority:** Medium
 **Branch root:** `feature/text-labels` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-012.md`).
@@ -279,7 +279,8 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 ## Open questions & risks
 
 - **Answered (user, 2026-11-16):** the user labels the 200 texts by hand, from a file sent
-    by mail.
+    by mail. **Changed the same day:** the user handed the labelling to the assistant, so no
+    human labelled the set; see the implementation note for what that means for the gate.
 - **Question (user, before 1.3 and 4.3):** approve each paid run and its upper bound.
 - **Question (user, after 1.3, only if a label fails):** drop the label, or use a larger model
     for it.
@@ -302,3 +303,6 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
     only the description is hashed and sent; label definitions; precision and recall weighted
     by the strata; the start rule names the Silver task definition; the model belongs to
     `label_version`. The user labels the evaluation set.
+- **2026-11-16** — Task 1.2: the evaluation set is drawn and labelled. The user handed the
+    labelling to the assistant; 45 of the 200 texts are marked as borderline. Counts are in
+    `dev/plans/implementations/FEATURE-012-text-labels.md`.
