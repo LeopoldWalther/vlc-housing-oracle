@@ -138,6 +138,21 @@ class TestIncrementalEqualsBackfill(unittest.TestCase):
             [1],
         )
 
+    def test_a_price_that_returns_is_a_period_of_its_own(self) -> None:
+        catalog = self.catalog()
+        self.process(catalog, self.commits, mode="backfill")
+
+        rows = catalog.load_table(f"{NAMESPACE}.listing_price").scan().to_arrow().to_pylist()
+
+        self.assertEqual(
+            [
+                (row["period"], row["price_eur"], row["previous_price_eur"], row["is_current"])
+                for row in rows
+                if row["source_listing_id"] == "syn-returned"
+            ],
+            [(1, 400_000, None, False), (2, 380_000, 400_000, False), (3, 400_000, 380_000, True)],
+        )
+
     def test_one_at_a_time_three_at_a_time_and_all_at_once_agree(self) -> None:
         expected = self.backfill()
 
