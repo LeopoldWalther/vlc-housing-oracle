@@ -663,7 +663,7 @@ technical_plan:
            wording that is listed by digest appears there by its target and count only. Set the
            feature plan to complete, tick its success criteria, add the progress-log entry and
            update the registry row.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["4.2"]
