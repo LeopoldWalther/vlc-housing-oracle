@@ -242,6 +242,19 @@ def _tied_detail_records() -> dict[str, list[LandingRow]]:
     )
 
 
+def _returning_price() -> dict[str, list[LandingRow]]:
+    # A price that is cut and then restored: three price periods, not two. Cards only, so the
+    # listing gets no quality row and cannot pair with another listing under rule pg1.
+    return {
+        "observation": [
+            _card(
+                "syn-returned", "duna", _at(FIRST_DAY + timedelta(days=offset), 8), price_eur=price
+            )
+            for offset, price in ((1, 400_000), (3, 380_000), (5, 400_000))
+        ]
+    }
+
+
 def _observation_only() -> dict[str, list[LandingRow]]:
     return {"observation": [_card("syn-no-detail", "duna", _at(FIRST_DAY, 10))]}
 
@@ -411,6 +424,7 @@ def generate_landing_v3(root: Path, *, seed: int) -> None:
         _padding_copies_only(),
         _detail_on_two_days(),
         _tied_detail_records(),
+        _returning_price(),
         _observation_only(),
         _personal_data_in_description(),
         _filler(random.Random(seed)),

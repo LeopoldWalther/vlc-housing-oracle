@@ -620,6 +620,7 @@ def _report(result: ProcessResult) -> None:
         "listing_quality",
         "listing_event",
         PROPERTY_GROUP_TABLE,
+        "listing_price",
     ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
 

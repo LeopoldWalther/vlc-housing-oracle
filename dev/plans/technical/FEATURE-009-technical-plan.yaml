@@ -255,7 +255,7 @@ technical_plan:
         reduction scenario exists already as syn-repriced (review L1). _report in
         src/silver/rebuild.py prints `listing_price: snapshot <id>` after the
         listing_property_group line.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["2.1"]
