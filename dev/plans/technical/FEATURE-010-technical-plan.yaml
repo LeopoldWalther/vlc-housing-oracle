@@ -573,7 +573,7 @@ technical_plan:
         "ignore", alarm action the existing topic. Its description says: a feature wording is
         not in the registry; read feature_pattern for rows with a null target and add them to
         src/silver/feature_patterns.py. Nothing is applied in this task.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["3.2"]
