@@ -20,7 +20,7 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing` and `listing_event` from Silver's whole `walk` and `observation` and replaces all three, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing` `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all four, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -40,6 +40,7 @@ listing_text: snapshot <snapshot-id>
 listing_quality: snapshot <snapshot-id>
 listing_event: snapshot <snapshot-id>
 listing_property_group: snapshot <snapshot-id>
+listing_price: snapshot <snapshot-id>
 ```
 
 | Exit code | Meaning |
@@ -109,6 +110,7 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_quality` | — | listing with a detail record | Twelve boolean flags, one per plausibility and location rule. A flag is an inferred label and changes no value of `listing`. See below. |
 | `listing_property_group` | — | listing with a detail record | The `property_group_id` of the listings that are certainly the same property under rule `pg1`, with the group's size and completeness. An inferred label; no listing is dropped. See below. |
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
+| `listing_price` | — | listing and price period | The prices a listing was seen at, in order, with the first and last sighting of each, the observed and the declared previous price, and `is_current` on the last period. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
 
 ### `listing_quality`
@@ -226,6 +228,45 @@ names a search that happened to show it.
   run that processes something, in both modes, because any run can add or retract events of any
   listing. Reading those two tables whole takes a few seconds; the table is the one exception to
   replacing day partitions.
+
+### `listing_price`
+
+The price history of every listing, as observed. The rule is `src/silver/sql/listing_price.sql`.
+Join the table to `listing` on `source` and `source_listing_id`.
+
+- **A sighting** is a row of `observation` that is not an empty card and has a `price_eur`, or a
+  row of `listing_detail` with a `price_eur`.
+- **The order** of a listing's sightings is total: by `observed_at`, then cards before detail
+  records (the detail page is fetched after the card that led to it), then by `price_eur`, then by
+  `prev_price_eur` with nulls last. Sightings equal in all four are interchangeable for every
+  column.
+- **A period** is a maximal run of consecutive sightings with one price. A return to an earlier
+  price is a new period, so prices 400,000, 380,000, 400,000 are three periods.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `source`, `source_listing_id` | `VARCHAR` | The listing |
+| `period` | `INTEGER` | 1 for the first observed price, rising by 1 |
+| `price_eur` | `INTEGER` | The price of the period |
+| `first_observed_at`, `last_observed_at` | `TIMESTAMP WITH TIME ZONE` | The period's first and last sighting |
+| `sightings` | `INTEGER` | Sightings in the period |
+| `previous_price_eur` | `INTEGER` | The price of the period before; null for period 1 |
+| `declared_previous_price_eur` | `INTEGER` | The `prev_price_eur` of the period's first sighting, card or detail record; null without one |
+| `is_current` | `BOOLEAN` | True for the listing's last period, never null |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+- **Which price is current.** `listing.price_eur` stays the price of the chosen detail record. The
+  latest price seen is the row with `is_current` true, which may come from a later card.
+- **`is_current` means the last price seen,** not that the listing is online. Presence is
+  `listing_event`'s question.
+- **Observed and declared are separate.** `previous_price_eur` is what this table saw;
+  `declared_previous_price_eur` is the portal's statement, which may name a price this table never
+  saw. Neither is a percentage; compute changes from the two integers.
+- **Short-lived prices can be missed.** A period is what was observed; a price that came and went
+  between two sightings leaves no row.
+- The table is recomputed from Silver's whole `observation` and `listing_detail` and replaced whole
+  in every run that processes something, in both modes: a late run can add a sighting inside any
+  listing's history and split or join its periods.
 
 ## Running in AWS
 

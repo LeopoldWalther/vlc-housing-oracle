@@ -320,7 +320,7 @@ technical_plan:
         is recomputed and replaced whole in every run. Add the report line to the example output
         and the table to the incremental-mode description. README.md: the status text counts one
         more Iceberg table.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
