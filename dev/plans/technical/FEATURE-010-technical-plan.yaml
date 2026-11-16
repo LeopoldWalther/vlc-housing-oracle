@@ -224,7 +224,7 @@ technical_plan:
         `registry`, `registry_digests` and `furnishing_values` copied unchanged. In
         src/silver/rebuild.py, _prepare() calls register_feature_registry(connection).
         feature_patterns.py does not import src.silver.rebuild.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: []
