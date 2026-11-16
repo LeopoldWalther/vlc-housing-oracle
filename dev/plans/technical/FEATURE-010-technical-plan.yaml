@@ -392,7 +392,7 @@ technical_plan:
         Add furnishing to the statement, in the column order of the conventions: the
         label_value of the listing's furnishing wording, null without one and null when its
         wordings give two different values.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.1"]

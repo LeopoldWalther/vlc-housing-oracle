@@ -2,11 +2,14 @@
 -- A label is true when one of the listing's wordings has that label as its target in
 -- feature_registry, and false otherwise, never null. It is the portal's statement, an inferred
 -- label beside the facts, not a verified fact, and it does not depend on the operation.
+-- furnishing is the value of the listing's furnishing wording; it is null when no wording states
+-- it and when two wordings state different values.
 WITH stated AS (
     SELECT DISTINCT
         text.source,
         text.source_listing_id,
-        registry.target
+        registry.target,
+        registry.label_value
     FROM silver_listing_text AS text
     CROSS JOIN unnest(text.features) AS unnested(feature)
     JOIN feature_registry AS registry
@@ -17,6 +20,7 @@ SELECT
     text.source_listing_id,
     coalesce(bool_or(stated.target = 'is_tenant_occupied'), false) AS is_tenant_occupied,
     coalesce(bool_or(stated.target = 'is_bare_ownership'), false) AS is_bare_ownership,
+    IF(count(DISTINCT stated.label_value) = 1, min(stated.label_value), NULL) AS furnishing,
     getvariable('transformation_version') AS transformation_version
 FROM silver_listing_text AS text
 LEFT JOIN stated
