@@ -340,7 +340,7 @@ technical_plan:
         listing_text) -> pyarrow.Table in src/silver/rebuild.py. The statement returns the
         columns of the conventions except furnishing. A label is true when one of the listing's
         wordings has that label as its registry target.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["1.2"]
