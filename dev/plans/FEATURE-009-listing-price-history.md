@@ -69,13 +69,17 @@ stale for 17% of sale listings.
 ## Design
 
 - **Primary approach:**
-    - `src/silver/sql/listing_price.sql`, handled like `listing_event`: computed from Silver's
-        own `observation` and `listing_detail` after a run has written its days, replaced whole,
-        before the ingest log.
+    - `src/silver/sql/listing_price.sql`, handled like `listing_event`: a member of
+        `SILVER_TABLES` after it, computed from Silver's own `observation` and `listing_detail`
+        after a run has written its days, replaced whole, before the ingest log.
+    - The run reads `walk`, `observation` and `listing_detail` from Silver once, before the
+        event rule and the price rule run, and passes each rule its columns: each rule narrows
+        the session's temporary tables to what it reads.
     - A price sighting is a search card that is not empty and has a price, or a detail record
-        with a price. Sightings of one listing are ordered by `observed_at`; a period is a
-        maximal run of consecutive sightings with one price. A return to an earlier price is a
-        new period.
+        with a price. Sightings of one listing are in a total order: `observed_at`, then cards
+        before detail records, then `price_eur`, then `prev_price_eur` with nulls last. A period
+        is a maximal run of consecutive sightings with one price. A return to an earlier price
+        is a new period.
 - **Contracts and invariants:**
     - `listing_price`, ordered by `source`, `source_listing_id`, `period`:
 
@@ -87,7 +91,7 @@ stale for 17% of sale listings.
         | `first_observed_at`, `last_observed_at` | timestamp (UTC) | first and last sighting |
         | `sightings` | int | sightings in the period |
         | `previous_price_eur` | int | price of the period before; null for period 1 |
-        | `declared_previous_price_eur` | int | the card's `prev_price_eur` at the period's first sighting; null without one |
+        | `declared_previous_price_eur` | int | the `prev_price_eur` of the period's first sighting, card or detail record; null without one |
         | `is_current` | boolean | true for the listing's last period |
         | `transformation_version` | string | |
 
@@ -106,24 +110,25 @@ stale for 17% of sale listings.
 ### Phase 1 — Price periods
 
 - [ ] **1.1 Periods from sightings.**
-    - RED: one price over three days gives one row with three sightings; a change gives two rows
-        with `previous_price_eur`; A, B, A gives three; empty cards and cards without a price are
-        ignored; exactly one row per listing is current. Fails because the function does not
-        exist.
-    - GREEN: `listing_price.sql` and `listing_price()` in `src/silver/rebuild.py`.
-- [ ] **1.2 Detail sightings and the declared previous price.**
-    - RED: a listing with a detail record and no card has one period; a detail and a card on one
-        day with different prices are ordered by `observed_at`; the declared previous price is
-        taken from the period's first sighting and is null without one. Fails on the missing
-        column and rows.
+    - RED: one price over three days gives one row with three sightings; a change gives two
+        rows; A, B, A gives three; empty cards and cards without a price are ignored; a listing
+        with a detail record and no card has one period; a card and a detail record at one
+        instant with different prices give the card's period first; two detail records at one
+        instant give the lower price first; exactly one row per listing is current. Fails
+        because the function does not exist.
+    - GREEN: `listing_price.sql` and `listing_prices()` in `src/silver/rebuild.py`.
+- [ ] **1.2 Previous prices.**
+    - RED: `previous_price_eur` is the price of the period before and null for period 1;
+        `declared_previous_price_eur` is the `prev_price_eur` of the period's first sighting,
+        card or detail record, and null without one. Fails on the missing columns.
 
 ### Phase 2 — The run writes the table
 
 - [ ] **2.1 Pipeline.** RED: after a backfill of the synthetic landing the catalog holds
     `listing_price`; stepwise commits give the same rows; a catalog that predates the table
     gains it without a backfill.
-- [ ] **2.2 Synthetic scenario and report.** RED: the generator holds one listing with a
-    reduction and one that returns to its first price; the command prints
+- [ ] **2.2 Synthetic scenario and report.** RED: the generator holds a listing that returns to
+    its first price (a reduction exists already); the command prints
     `listing_price: snapshot <id>`.
 
 ### Phase 3 — Documentation and operation
@@ -194,3 +199,7 @@ $0/month — no resources added or changed beyond a new task-definition revision
 - **2026-11-16** — Rooms from the search card removed: the acquisition side corrected the
     one-room extraction the same day, and its replay fills history. The feature is now additive
     and needs no backfill.
+- **2026-11-16** — Review approved with three corrections folded in: a total order of sightings
+    (M1); the table joins `SILVER_TABLES` and the run reads Silver once before the event and
+    price rules (M2); the declared previous price comes from the period's first sighting of
+    either kind (M3). Implementation starts after FEATURE-013 is merged.
