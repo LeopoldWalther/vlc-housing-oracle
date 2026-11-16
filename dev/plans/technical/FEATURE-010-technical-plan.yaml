@@ -445,7 +445,7 @@ technical_plan:
         tables with the existing ones for the one write_silver_tables call. Update the comment
         above the call: a run can change any listing's features and with them the counts of
         any wording.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["2.2"]
