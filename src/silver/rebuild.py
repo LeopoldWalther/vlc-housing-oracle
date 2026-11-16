@@ -159,6 +159,8 @@ class ProcessResult:
     days: dict[str, tuple[date, ...]]
     affected: int
     snapshot_ids: dict[str, int | None]
+    # Feature wordings of this run's Silver that are not in the registry.
+    unknown_feature_patterns: int
 
 
 def local_commits(landing: Path) -> list[LandingCommit]:
@@ -192,7 +194,7 @@ def process_landing(
     ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
     todo = pending(commits, set(ingested))
     if not todo:
-        return ProcessResult(0, (), {}, 0, {})
+        return ProcessResult(0, (), {}, 0, {}, 0)
 
     known = {run_id: run.observed_dates for run_id, run in ingested.items()}
     known |= {commit.run_id: commit.observed_dates for commit in todo}
@@ -252,13 +254,11 @@ def process_landing(
     # property groups of listings it did not touch, and change any listing's features and with
     # them the counts of any wording, so these tables are recomputed and replaced whole; they
     # read Silver after this run's days and listings are written.
+    labels = _labels_from_silver(connection, catalog)
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
-        {
-            **_labels_from_silver(connection, catalog),
-            **_history_from_silver(connection, catalog),
-        },
+        {**labels, **_history_from_silver(connection, catalog)},
         properties,
         allow_new_columns=backfill,
     )
@@ -269,6 +269,7 @@ def process_landing(
         days={name: tuple(sorted(days[name])) for name in DAY_TABLES},
         affected=len(affected),
         snapshot_ids=snapshot_ids,
+        unknown_feature_patterns=labels["feature_pattern"]["target"].null_count,
     )
 
 
@@ -614,7 +615,11 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         "environment variables",
     )
     parser.add_argument("--mode", choices=("incremental", "backfill"), default="incremental")
-    parser.add_argument("--metrics", action="store_true", help="publish PendingRuns to CloudWatch")
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="publish PendingRuns and, after a run, UnknownFeaturePatterns to CloudWatch",
+    )
     arguments = parser.parse_args(argv)
     on_s3 = arguments.landing.startswith("s3://")
     if not on_s3 and not Path(arguments.landing).is_dir():
@@ -632,6 +637,7 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in exclude]
 
     remaining = len(todo)
+    unknown_feature_patterns = None
     try:
         if not todo:
             print("nothing pending")
@@ -648,13 +654,14 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
                     now=lambda: datetime.now(UTC),
                 )
             remaining = 0
+            unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
     except (LandingContractError, SilverSchemaError) as error:
         print(f"Silver run refused: {error}", file=sys.stderr)
         return 1
     finally:
         if arguments.metrics:
-            _publish_pending(cloudwatch_client, remaining)
+            _publish_metrics(cloudwatch_client, remaining, unknown_feature_patterns)
     return 0
 
 
@@ -679,18 +686,33 @@ def _report(result: ProcessResult) -> None:
         "listing_event",
         PROPERTY_GROUP_TABLE,
         "listing_price",
+        "feature_pattern",
+        "listing_feature_label",
     ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
+    print(f"unknown feature patterns: {result.unknown_feature_patterns}")
 
 
-def _publish_pending(cloudwatch_client, remaining: int) -> None:
+def _publish_metrics(
+    cloudwatch_client, remaining: int, unknown_feature_patterns: int | None
+) -> None:
+    """Publish PendingRuns, and UnknownFeaturePatterns when a run computed it.
+
+    A run with nothing pending computed nothing, so it leaves the last count standing instead of
+    publishing a zero it did not measure.
+    """
     if cloudwatch_client is None:
         import boto3
 
         cloudwatch_client = boto3.client("cloudwatch")
+    metrics = {"PendingRuns": remaining}
+    if unknown_feature_patterns is not None:
+        metrics["UnknownFeaturePatterns"] = unknown_feature_patterns
     cloudwatch_client.put_metric_data(
         Namespace=METRICS_NAMESPACE,
-        MetricData=[{"MetricName": "PendingRuns", "Value": remaining, "Unit": "Count"}],
+        MetricData=[
+            {"MetricName": name, "Value": value, "Unit": "Count"} for name, value in metrics.items()
+        ],
     )
 
 

@@ -91,11 +91,14 @@ def _detail(
     *,
     price_eur: int = 250_000,
     description: str = "Piso luminoso con balcón.",
+    features: Sequence[str] = ("80 m² construidos", "3 habitaciones"),
     **attributes: object,
 ) -> dict[str, list[LandingRow]]:
     """One detail record and its text row, keyed alike as the contract requires.
 
-    ``attributes`` are further detail columns, such as coordinates, floor or condition.
+    ``features`` are the portal's feature strings of the text row; the default ones are wordings
+    of the registry. ``attributes`` are further detail columns, such as coordinates, floor or
+    condition.
     """
     key = _area(municipality) | {
         "source_listing_id": listing_id,
@@ -126,7 +129,7 @@ def _detail(
         "title": "Piso en venta",
         "location": f"Calle Inventada, {municipality.title()}",
         "description": description,
-        "features": ["80 m²", "3 habitaciones"],
+        "features": list(features),
     }
     return {"listing_detail": [detail], "listing_text": [text]}
 
@@ -253,6 +256,25 @@ def _returning_price() -> dict[str, list[LandingRow]]:
             for offset, price in ((1, 400_000), (3, 380_000), (5, 400_000))
         ]
     }
+
+
+def _feature_wordings() -> dict[str, list[LandingRow]]:
+    # What the feature rules read: syn-furnished states a furnishing, syn-tenant a tenant, and
+    # syn-novel-feature carries the one wording that is in no registry. None has coordinates, so
+    # none pairs with another listing under rule pg1.
+    at = _at(FIRST_DAY + timedelta(days=2), 9)
+    stated = {
+        "syn-furnished": "Amueblado y cocina equipada",
+        "syn-tenant": "Alquilada, con inquilinos",
+        "syn-novel-feature": "Vistas al mar desde 2 miradores",
+    }
+    return _merge(
+        {"observation": [_card(listing_id, "brisa", at) for listing_id in stated]},
+        *(
+            _detail(listing_id, "brisa", at, features=(feature,))
+            for listing_id, feature in stated.items()
+        ),
+    )
 
 
 def _observation_only() -> dict[str, list[LandingRow]]:
@@ -425,6 +447,7 @@ def generate_landing_v3(root: Path, *, seed: int) -> None:
         _detail_on_two_days(),
         _tied_detail_records(),
         _returning_price(),
+        _feature_wordings(),
         _observation_only(),
         _personal_data_in_description(),
         _filler(random.Random(seed)),
