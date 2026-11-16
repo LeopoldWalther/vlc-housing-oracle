@@ -1,0 +1,598 @@
+# Technical plan for FEATURE-011 — Listing location from coordinates.
+# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1 to M4,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+# Implementation starts after FEATURE-010 is merged to main.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-011"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-16"
+    version: "1.0"
+    total_tasks: 9
+    estimated_hours: "11"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "1.3", "2.1", "2.2", "3.1", "3.2", "3.3", "3.4"]
+    feature_plan: "dev/plans/FEATURE-011-listing-location.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-011.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "terraform-validate"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -c \"import duckdb; duckdb.sql('INSTALL spatial')\""
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - DuckDB's spatial extension is installed once per environment by
+      python -c "import duckdb; duckdb.sql('INSTALL spatial')" (CI, the README and the image do
+      it). Code that needs it runs LOAD spatial on its session; nothing installs it at run time,
+      and no test skips when it is missing.
+    - The statistics office's shapefile has, among others, the text fields CUSEC (section, 10
+      digits), CUDIS (district, 7), CUMUN (municipality, 5), CPRO (province, 2) and NMUN
+      (municipality name), and polygons or multipolygons in a projected system. These five names
+      are constants of the converter.
+    - Every reprojection is ST_Transform(geometry, <source>, 'EPSG:4326', always_xy := true):
+      longitude is x and latitude is y everywhere, and a point is ST_Point(longitude, latitude).
+    - A reference vintage is the directory <out>/census_sections/vintage=<vintage>/ with
+      part-0.parquet and _manifest.json. The Parquet columns, in order, ordered by section_code:
+        section_code        string   10 digits
+        district_code       string   7 digits
+        municipality_code   string   5 digits
+        municipality_name   string
+        geometry            binary   WKB, EPSG:4326, longitude before latitude
+        vintage             string   the same value on every row
+      The manifest is a JSON object with dataset ("census_sections"), vintage, source, licence,
+      retrieved, archive_sha256, province, crs and rows. A vintage directory is written once; an
+      existing one is refused.
+    - The Silver table listing_location: one row per listing with a detail record
+      (detail_observed_at is not null), ordered by source, source_listing_id. Columns, in order,
+      with Arrow types:
+        source                   string
+        source_listing_id        string
+        municipality_code        string   null without coordinates or outside every polygon
+        district_code            string   as municipality_code
+        section_code             string   as municipality_code
+        reference_vintage        string   never null
+        transformation_version   string
+      A listing belongs to a polygon when ST_Intersects(polygon, point) holds, so a point on a
+      border belongs; of several polygons the one with the smallest section_code is taken, and
+      the three codes come from that one polygon.
+    - LOCATION_TABLE = "listing_location" is a constant of src/silver/rebuild.py and is not a
+      member of SILVER_TABLES: it exists only for a run given --census-sections.
+      LOCATION_LISTING_COLUMNS are source, source_listing_id, detail_observed_at, latitude and
+      longitude.
+    - --census-sections names a vintage directory, local or s3://. A run given it reads
+      part-0.parquet and checks it before its first write: readable, the six columns, at least
+      one row, exactly one vintage. A failed check raises ReferenceDataError, whose message
+      names the path and what is wrong and holds no row value; the command exits 1 and the runs
+      stay pending.
+    - A new vintage changes rows without a new transformation_version: the input changed, not
+      the rule.
+    - Synthetic reference data uses the province codes 99 and 98, which no real province has,
+      and invented municipality names. The real boundary file never enters the repository, a
+      fixture or a test.
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "ADR 0004, the licence and the architecture note"
+      description: |
+        Read the statistics office's current legal notice and its page for the digitised census
+        sections. If reuse with attribution is allowed, write docs/adr/0004-reference-data.md
+        after the form of ADR 0003: context (public data as a second kind of input; Silver must
+        stay reproducible), decision (immutable vintages under reference/v1/<dataset>/, the
+        layout and manifest of the conventions, converted by a command of this repository from
+        a file the operator downloads; no code touches the network), the licence quoted with the
+        attribution line it asks for and the date it was read, consequences (a yearly manual
+        step; a new vintage changes rows without a new transformation_version) and the rejected
+        alternatives (a scheduled downloader; a generic reference abstraction; a geometry
+        library in Python; point-in-polygon in plain SQL). CLAUDE.md: the Target Architecture
+        section names the reference layer in one short entry. If the licence does not allow the
+        use, stop, leave the task in progress and report to the user.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: []
+      branch: "feature/listing-location/1.1-adr-and-licence"
+      commit_message: "docs(adr): reference data as immutable, versioned vintages"
+      acceptance_criteria:
+        - "ADR 0004 quotes the licence, names the attribution and the date it was read"
+        - "ADR 0004 states the layout, the manifest and the yearly procedure's shape"
+        - "CLAUDE.md names the reference layer and changes no other rule"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/adr/0004-reference-data.md"
+        - "CLAUDE.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "docs/adr/0004-reference-data.md"
+      files_to_modify:
+        - "CLAUDE.md"
+
+    - id: "1.2"
+      title: "Synthetic polygons and the test environment"
+      description: |
+        src/synthetic/reference.py: write_census_archive(path) writes a zip archive that holds
+        one shapefile in a sub-folder, in EPSG:25830, with the five fields of the conventions
+        and four rectangles built with ST_MakeEnvelope around reprojected points:
+          9900101001  Alba   around latitude 39.47, longitude -0.37: 1,600 m wide, 1,000 m high
+          9900101002  Alba   the same centre, 800 m wide, 500 m high (inside the first)
+          9900201001  Brisa  around latitude 39.60, longitude -0.50: 1,600 m wide, 1,000 m high
+          9800101001  Otra   around latitude 40.60, longitude -1.50, in the other province
+        The rectangles are wider than high, so swapped axes fail a test. SYNTHETIC_CRS and the
+        province codes are constants of the module. .github/workflows/ci.yml gains the step
+        "Install the DuckDB spatial extension" with the command of the conventions, after the
+        dependency install; README.md gains the same command in its Development block.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["1.1"]
+      branch: "feature/listing-location/1.2-synthetic-polygons"
+      commit_message: "feat(synthetic): census sections as a zipped shapefile, and the spatial extension in CI"
+      acceptance_criteria:
+        - "The archive holds exactly one .shp, in a sub-folder, with its .dbf, .shx and .prj"
+        - "Read back through DuckDB it has four polygons, the five fields, and codes of 10, 7, 5 and 2 digits"
+        - "Reprojected with longitude first, the point latitude 39.4709, longitude -0.37 lies in both Alba rectangles, and latitude 39.605, longitude -0.37 in none"
+        - "The point with those two numbers swapped lies in none"
+        - "Writing to an existing path is refused"
+        - "CI and the README install the extension with the same command"
+      tdd:
+        red:
+          test_file: "tests/test_synthetic_reference.py"
+          change: "New file with the cases of the acceptance criteria; it loads the spatial extension on its own session."
+          command: "python -m unittest tests.test_synthetic_reference -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.synthetic.reference'"
+        green:
+          change: "The generator; the CI step and the README line."
+          command: "python -m unittest tests.test_synthetic_reference -v"
+        refactor:
+          change: "The module docstring says that the codes and names are invented; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/synthetic/reference.py"
+        - "tests/test_synthetic_reference.py"
+        - ".github/workflows/ci.yml"
+        - "README.md"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/landing.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/synthetic/reference.py"
+        - "tests/test_synthetic_reference.py"
+      files_to_modify:
+        - ".github/workflows/ci.yml"
+        - "README.md"
+
+    - id: "1.3"
+      title: "The converter"
+      description: |
+        src/reference/census_sections.py: convert(archive, *, province, crs, vintage, source,
+        licence, retrieved, out) and main(argv) as python -m src.reference.census_sections
+        --archive <zip> --province <2 digits> --crs <EPSG code> --vintage <date> --source <url>
+        --licence <text> --retrieved <date> --out <dir>, all required. It finds the one .shp in
+        the archive, reads it in place through /vsizip/<archive>/<inner path>, keeps the rows of
+        the province, reprojects from --crs with longitude first, and writes the vintage
+        directory of the conventions with the manifest; archive_sha256 is the SHA-256 of the
+        archive file. It refuses, with exit code 2 and a message that names the cause: an
+        existing vintage directory, an archive with no or several .shp files, a shapefile that
+        lacks one of the five fields (naming it), a province without a row, and a section code
+        that occurs twice. No code touches the network.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.75
+      depends_on: ["1.2"]
+      branch: "feature/listing-location/1.3-converter"
+      commit_message: "feat(reference): convert a census-section archive to an immutable vintage"
+      acceptance_criteria:
+        - "Converting the synthetic archive for province 99 writes three rows with the six columns in order, ordered by section_code, and the vintage on every row"
+        - "The geometry is WKB in EPSG:4326 with longitude first: the Alba point lies in the Alba polygons read back from the Parquet"
+        - "The manifest holds the nine keys, the row count 3 and the SHA-256 of the archive file"
+        - "A second conversion into the same vintage is refused and changes no file"
+        - "An archive with two shapefiles, one with none, and a shapefile without NMUN are refused, each naming the cause"
+        - "A province without a row is refused"
+      tdd:
+        red:
+          test_file: "tests/test_reference_census_sections.py"
+          change: "New file. Archives come from write_census_archive and from small variants built in the test."
+          command: "python -m unittest tests.test_reference_census_sections -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.reference'"
+        green:
+          change: "The package, the function and the command."
+          command: "python -m unittest tests.test_reference_census_sections -v"
+        refactor:
+          change: "The field names are one constant; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/reference/__init__.py"
+        - "src/reference/census_sections.py"
+        - "tests/test_reference_census_sections.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/reference/__init__.py"
+        - "src/reference/census_sections.py"
+        - "tests/test_reference_census_sections.py"
+      files_to_modify: []
+
+    - id: "2.1"
+      title: "The rule"
+      description: |
+        src/silver/sql/listing_location.sql and listing_locations(connection, listing, sections)
+        -> pyarrow.Table in src/silver/rebuild.py, with LOCATION_TABLE and
+        LOCATION_LISTING_COLUMNS. sections is an Arrow table with the six reference columns. The
+        function prepares the session, loads the spatial extension, registers its two inputs
+        under names of its own, runs the statement and unregisters them, so it replaces no
+        silver_<table>. The statement gives the table of the conventions. Do not write the table
+        in a run yet.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["1.3"]
+      branch: "feature/listing-location/2.1-rule"
+      commit_message: "feat(silver): municipality, district and census section of a listing's coordinates"
+      acceptance_criteria:
+        - "A listing inside one rectangle gets its three codes"
+        - "A listing inside two rectangles gets the three codes of the smaller section code"
+        - "A listing on a rectangle's border gets that rectangle's codes"
+        - "A listing without coordinates and one outside every rectangle have null codes and the vintage"
+        - "A listing without a detail record has no row; every listing with one has exactly one"
+        - "Rows are ordered by source, source_listing_id; the seven columns are in order with transformation_version silver-v1"
+        - "The session keeps no relation of the function and its silver_<table> tables are untouched"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_location.py"
+          change: |
+            New file. The sections come from converting the synthetic archive once per class;
+            listings are hand-built Arrow rows with the columns of LOCATION_LISTING_COLUMNS.
+          command: "python -m unittest tests.test_silver_listing_location -v"
+          expected_failure: "ImportError: cannot import name 'listing_locations' from 'src.silver.rebuild'"
+        green:
+          change: "The statement, the function and the two constants."
+          command: "python -m unittest tests.test_silver_listing_location -v"
+        refactor:
+          change: "The statement's header comment states the rule and the axis order; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_location.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_location.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/reference/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_location.sql"
+        - "tests/test_silver_listing_location.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "2.2"
+      title: "A run given --census-sections writes the table"
+      description: |
+        In src/silver/rebuild.py: read_census_sections(connection, path) -> pyarrow.Table reads
+        and checks a vintage directory as the conventions say and raises ReferenceDataError.
+        process_landing gains the keyword census_sections: str | None = None. When it is given,
+        the run reads and checks the file before its first write, and writes LOCATION_TABLE in
+        the existing write_silver_tables call of the whole-table labels, from the single read of
+        Silver's listing, which gains the columns it lacks. Without the argument the run neither
+        reads the file nor writes the table. main gains --census-sections <dir-or-s3> and exits
+        1 on ReferenceDataError; _report prints `listing_location: snapshot <id>` after the last
+        label line only for a run that wrote the table.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.75
+      depends_on: ["2.1"]
+      branch: "feature/listing-location/2.2-pipeline"
+      commit_message: "feat(silver): write listing_location in a run given --census-sections"
+      acceptance_criteria:
+        - "A backfill of the synthetic landing with the converted synthetic vintage writes the table: the three listings near the Alba point carry the section 9900101001 and the far listing has null codes"
+        - "Commits processed one at a time with the same vintage give the rows of that backfill"
+        - "A run without the argument writes no such table and every other table as before"
+        - "A second vintage of the same polygons changes reference_vintage on every row and no code"
+        - "A missing directory, a file without a column and a file with two vintages raise ReferenceDataError before any table is written; the catalog holds no new snapshot and the runs stay pending"
+        - "A run with nothing pending writes no snapshot of the table"
+        - "The command with --census-sections prints one line `listing_location: snapshot <digits>`, none without it, and exits 1 with the path in the message for a missing directory"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            tests/test_silver_incremental.py: a class that converts the synthetic archive once
+            and compares a backfill with stepwise runs, both given census_sections, plus the
+            failure cases. tests/test_silver_cli.py: the report line with and without the
+            argument and the exit code.
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_cli -v"
+          expected_failure: "TypeError: process_landing() got an unexpected keyword argument 'census_sections'"
+        green:
+          change: "The reader and its error, the keyword, the early check, the table in the write call, the argument and the report line."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_cli tests.test_silver_rebuild -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/reference/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "3.1"
+      title: "The spatial extension in the image"
+      description: |
+        Dockerfile: the build-time statement that installs httpfs and aws as the job's user also
+        installs spatial and then loads it once, so a missing or unloadable extension fails the
+        build. The comment above it names the third extension and why it is baked in.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.2"]
+      branch: "feature/listing-location/3.1-image"
+      commit_message: "build(image): bake the DuckDB spatial extension into the Silver image"
+      acceptance_criteria:
+        - "The image builds for linux/arm64 in the pull request's image job"
+        - "The build runs LOAD spatial as the job's user"
+        - "No run downloads an extension"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "Dockerfile"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "Dockerfile"
+
+    - id: "3.2"
+      title: "Infrastructure: the reference prefix and the argument"
+      description: |
+        infra/silver/variables.tf: census_sections (string, default ""), the s3:// location of
+        one vintage directory. infra/silver/ecs.tf: when it is not empty, the Silver task's
+        command gains --census-sections with it; the task role may read objects under
+        reference/v1/ of the lake bucket and list that prefix. Nothing is applied in this task.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["3.1"]
+      branch: "feature/listing-location/3.2-infrastructure"
+      commit_message: "feat(infra): read access to reference data and the census-sections argument"
+      acceptance_criteria:
+        - "terraform fmt -check and validate pass"
+        - "With the default the task's command is unchanged"
+        - "The role gains read access to one prefix and nothing else"
+        - "No bucket name or account value is committed"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "infra/silver/variables.tf"
+        - "infra/silver/ecs.tf"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/silver/*.tfvars"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "infra/silver/variables.tf"
+        - "infra/silver/ecs.tf"
+
+    - id: "3.3"
+      title: "Runbook and README"
+      description: |
+        docs/silver-rebuild.md: listing_location joins "The tables" with the note that it exists
+        only for a run given --census-sections, and gets a section of its own: the rule, the
+        seven columns, and the reading. The reading states that the portal's coordinate is
+        approximate, so statistics by district are safer than by section; that null codes mean
+        no coordinates or a point outside every polygon; that the codes are the statistics
+        office's and join its public tables; that reference_vintage names the input and a new
+        vintage changes rows without a new transformation_version; and that the table is
+        replaced whole in every run. A section "Reference data" gives the yearly procedure:
+        download, the converter command with its arguments, the upload, the variable, and the
+        attribution. The report line joins the example output and the argument the command's
+        description. README.md: the status text and the architecture bullet name the reference
+        layer and the table.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["3.2"]
+      branch: "feature/listing-location/3.3-docs"
+      commit_message: "docs(silver): describe listing_location and the reference data procedure"
+      acceptance_criteria:
+        - "The runbook states the rule, the columns, the reading and the yearly procedure"
+        - "The README counts the Silver tables correctly"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+
+    - id: "3.4"
+      title: "First vintage, deployment and first run (operator, with approval)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR. Every
+        AWS action needs explicit user approval in chat.
+        1. Download the 2026 edition; convert it for province 46 with the vintage 2026-01-01
+           into a local directory; check the manifest (1,841 rows expected).
+        2. Upload the vintage directory to reference/v1/census_sections/ of the lake bucket.
+        3. Wait for the image of the merge commit; set silver_image and census_sections in the
+           gitignored tfvars; terraform plan and apply. Only the task role's policy and a new
+           task definition revision may change.
+        4. Let the next landing commit or the catch-up start a task. No backfill. From the task
+           log take the snapshot id and the duration, and compare it with the durations recorded
+           for FEATURE-010.
+        5. In Athena, privately and as counts only: rows, rows with a section, rows with
+           coordinates in listing and no section, sections, districts and municipalities in
+           use, and listings whose municipality_code differs from the code most listings of
+           their portal municipality have. The review measured, on Silver of 2026-11-16: 22,961
+           of 22,974 listings with coordinates in a section, 13 in none; 1,100 sections, 87
+           districts and 50 municipalities in use; 515 listings outside their portal
+           municipality's main one.
+        6. Write dev/plans/implementations/FEATURE-011-listing-location.md with the counts, the
+           vintage, the manifest's hash and the durations; set the feature plan to complete,
+           tick its success criteria, add the progress-log entry and update the registry row.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["3.3"]
+      branch: "feature/listing-location/3.4-first-run-record"
+      commit_message: "docs(plans): FEATURE-011 first vintage, first run and location counts"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0 and prints a listing_location snapshot"
+        - "Rows equal the listings with a detail record, and every row carries the vintage"
+        - "The counts are recorded beside the review's, and a deviation is explained"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-011-listing-location.md"
+        - "dev/plans/FEATURE-011-listing-location.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-011-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set census_sections to the empty string and apply; drop the Silver table listing_location; the uploaded vintage may stay"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-011-listing-location.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-011-listing-location.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-011-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/listing-location/integration"
+    task_branch_strategy: |
+      Create the integration branch from main after the final PR of FEATURE-010 is merged and
+      main holds this feature's plan, review and technical plan. Task 1.1 starts from the
+      integration branch; each later task up to 3.3 starts from the integration branch after its
+      predecessor is merged. No task runs in parallel. Task 3.4 starts from main after the final
+      PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, never rewriting history,
+      and run validation.final_commands there. The final PR goes from the integration branch to
+      main. Task 3.4's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore", "build"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): listing location from coordinates and census sections"
+    final_pr_description: |
+      Implements FEATURE-011: a converter turns the statistics office's census-section archive
+      into an immutable reference vintage, and a Silver run given --census-sections writes
+      listing_location with the municipality, district and section of every listing's
+      coordinates. See dev/reviews/REVIEW-FEATURE-011.md (approved) and ADR 0004. Nothing is
+      applied by this PR; task 3.4 uploads and deploys with approval.
+
+  notes:
+    - "The real boundary file never enters the repository, a fixture or a test. Tests use the synthetic archive."
+    - "Never print, log or commit a real listing id or coordinate; task 3.4 outputs counts only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image and census_sections change, by the operator, in task 3.4."
+    - "Longitude is x. Every ST_Transform carries always_xy := true and every point is ST_Point(longitude, latitude); a swap gives null codes for every listing and no error."
+    - "The archive's root is not readable through /vsizip/: the path must name the inner .shp, which lies in a sub-folder with a non-ASCII name in the real file."
+    - "The file is read and checked before the first write of a run, not when the table is computed."
+    - "Read the columns this rule needs from Silver in the single listing read, before listing_quality() replaces the temporary table silver_listing."
+    - "If the licence read in task 1.1 does not allow reuse with attribution, the feature stops there."
+    - "FEATURE-012 changes process_landing too and adds a second optional input in the same way; its phase 3 starts after this feature is merged."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

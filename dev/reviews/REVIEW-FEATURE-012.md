@@ -25,7 +25,7 @@ evaluation set from a file sent by mail.
 
 - **Plan and dependencies:** `dev/plans/FEATURE-012-text-labels.md` (🔵 Planned, registered).
     FEATURE-006 is 🟢 Complete. FEATURE-009 is implemented and in review as a pull request;
-    FEATURE-010 and FEATURE-011 are planned and reviewed after this plan. Phases 1 and 2 touch no file
+    FEATURE-010 and FEATURE-011 are approved and not implemented. Phases 1 and 2 touch no file
     those features change; phase 3 changes `src/silver/rebuild.py` after them.
 - **Code, tests, data, and configuration:**
     - `src/silver/sql/listing_text.sql`: only `description` passes through `redact_personal`;
