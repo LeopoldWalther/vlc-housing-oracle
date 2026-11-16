@@ -613,7 +613,7 @@ technical_plan:
         incremental-mode description, and the alarm the alarms section with what to do when it
         mails. The cost section gains the metric and the alarm. README.md: the status text
         counts two more Iceberg tables and names the feature labels.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["4.1"]
