@@ -82,3 +82,76 @@ Two observations for the later tasks:
   8 of 15 texts say nothing about the state.
 - Stratum B holds 13 of the 45 borderline texts: "ready to move in, or to update" is where the
   definitions are hardest to apply, for a person and for a model.
+
+## Paid evaluation (task 1.6)
+
+Run on 2026-11-16 with the evaluation command of task 1.5 and prompt `tl1`, once over the 200
+texts. Model-invocation logging is off in the account.
+
+### The planned model is not available
+
+Claude Haiku 5.5 was the plan's model. The account's Anthropic use-case form was submitted and
+the model's price offer accepted on 2026-11-16 (the user approved both). The model still answers
+every request with "not available for this account", through the global and the EU inference
+profile, also after ten minutes of retries, while its agreement, authorisation, entitlement and
+region all read as available. Claude Haiku 4.5 answers through the global profile.
+
+The run therefore used **Claude Haiku 4.5** (`global.anthropic.claude-haiku-4-5-20251001-v1:0`).
+Its price is ten times that of Haiku 5.5:
+
+| Model | Input / output, per million tokens |
+|---|---|
+| Claude Haiku 5.5, global profile | $0.10 / $0.50 |
+| Claude Haiku 4.5, global profile | $1.00 / $5.00 |
+
+### Report
+
+```
+texts: 200
+invalid answers: 0
+input tokens: 334989
+output tokens: 10956
+seconds per text: 0.71
+renovation_state agreement: 0.76
+renovated: labelled 35, model 38, both 33, precision 0.87, recall 0.94, weighted precision 0.88, weighted recall 0.96
+needs_renovation: labelled 48, model 39, both 39, precision 1.00, recall 0.81, weighted precision 1.00, weighted recall 0.86
+is_auction: labelled 37, model 37, both 37, precision 1.00, recall 1.00, weighted precision 1.00, weighted recall 1.00
+```
+
+Per text about 1,675 input and 55 output tokens. The run cost about $0.39.
+
+| Estimate | Haiku 4.5 | Haiku 5.5 (same tokens) |
+|---|---|---|
+| Per text | $0.00195 | $0.00020 |
+| A month (about 3,250 new sale texts) | ~$6.30 | ~$0.65 |
+| The backlog (about 15,700 distinct sale texts) | ~$31 | ~$3 |
+
+### Gate
+
+| Value | Weighted precision ≥ 0.90 | Weighted recall ≥ 0.80 | Result |
+|---|---|---|---|
+| `renovated` | 0.88 | 0.96 | fails on precision |
+| `needs_renovation` | 1.00 | 0.86 | passes |
+| `is_auction` | 1.00 | 1.00 | passes |
+
+Where the model and the evaluation labels differ on `renovation_state` (48 texts):
+
+| Evaluation label | Model | Texts |
+|---|---|---|
+| `unknown` | `original` | 29 |
+| `needs_renovation` | `original` | 9 |
+| `original` | `renovated` | 5 |
+| `unknown` | `new_build` | 2 |
+| `original` | `new_build` | 1 |
+| `renovated` | `new_build` | 1 |
+| `renovated` | `original` | 1 |
+
+- All five false positives of `renovated` are homes where only some rooms were renewed (a
+  kitchen, bathrooms, a living room, or a partial renovation with a year). The definitions call
+  them `original`; the model reads them as renovated as a whole.
+- The nine `needs_renovation` texts the model calls `original` are of the kind "habitable, and
+  to update" where the text also states a need.
+- `unknown` against `original` does not touch a decisive value.
+
+The decision is the user's: which model, and whether `renovated` is dropped, or kept with a
+sharper prompt under a new label version and a new run.

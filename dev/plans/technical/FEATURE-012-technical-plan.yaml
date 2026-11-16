@@ -404,7 +404,7 @@ technical_plan:
            a new LABEL_VERSION and a new run, and a dropped label returns the plan to the
            reviewer before phase 2.
         5. Add the progress-log entry to the feature plan.
-      status: "not_started"
+      status: "in_progress"
       complexity: "medium"
       estimated_hours: 1.0
       depends_on: ["1.2", "1.5"]
