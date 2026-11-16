@@ -7,10 +7,10 @@ time-on-market, and market dynamics.
 
 > **Status:** Silver is implemented and follows landing v3: a landing commit queues a run in AWS,
 > and `python -m src.silver.rebuild --landing <dir-or-s3> --catalog <name>` processes the runs its
-> ingest log does not hold yet into seven Iceberg tables ([runbook](docs/silver-rebuild.md)). The
-> first Gold dataset, `listing_property_group`, groups listings that are certainly the same
-> property; it is built by hand and stays private ([docs](docs/gold-property-group.md)). Models
-> are not built yet.
+> ingest log does not hold yet into eight Iceberg tables ([runbook](docs/silver-rebuild.md)).
+> Among them are two tables of inferred labels: quality flags, and property groups that put
+> listings which are certainly the same property into one group. Gold and models are not built
+> yet.
 
 ## Architecture
 
@@ -29,9 +29,9 @@ time-on-market, and market dynamics.
     input, so a training dataset can name the exact rows it was built from. A full rebuild remains
     as a backfill ([ADR 0001](docs/adr/0001-silver-on-iceberg.md),
     [ADR 0003](docs/adr/0003-immutable-bronze-and-landing-per-run.md)).
-- **Gold** is plain Parquet, readable by a browser over HTTP. Its first dataset,
-    `listing_property_group`, maps listings to properties and is private: only aggregates
-    derived from it are published.
+- **Gold** is plain Parquet, readable by a browser over HTTP, and holds use-case-specific
+    datasets. It has none yet; labels that describe a listing as such, like quality flags and
+    property groups, live in Silver.
 
 ## Where the data comes from
 
