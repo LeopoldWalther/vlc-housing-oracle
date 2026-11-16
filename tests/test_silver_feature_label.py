@@ -74,5 +74,52 @@ class SaleLabelTest(unittest.TestCase):
         self.assertEqual({row["transformation_version"] for row in rows}, {"silver-v1"})
 
 
+class FurnishingTest(unittest.TestCase):
+    def test_each_furnishing_wording_gives_its_value(self) -> None:
+        rows = labels(
+            text("syn-1", "Amueblado y cocina equipada"),
+            text("syn-2", "Cocina equipada y casa sin amueblar"),
+            text("syn-3", "Cocina sin equipar y casa sin amueblar"),
+        )
+
+        self.assertEqual(
+            {listing_id: row["furnishing"] for listing_id, row in rows.items()},
+            {"syn-1": "furnished", "syn-2": "kitchen_only", "syn-3": "unfurnished"},
+        )
+
+    def test_a_listing_without_a_furnishing_wording_has_none(self) -> None:
+        rows = labels(text("syn-1", "3 habitaciones", TENANT), text("syn-2"))
+
+        self.assertIsNone(rows["syn-1"]["furnishing"])
+        self.assertIsNone(rows["syn-2"]["furnishing"])
+
+    def test_two_wordings_with_different_values_give_none(self) -> None:
+        rows = labels(
+            text("syn-1", "Amueblado y cocina equipada", "Cocina sin equipar y casa sin amueblar"),
+            text("syn-2", "Amueblado y cocina equipada", "AMUEBLADO Y COCINA EQUIPADA"),
+        )
+
+        self.assertIsNone(rows["syn-1"]["furnishing"])
+        self.assertEqual(rows["syn-2"]["furnishing"], "furnished")
+
+    def test_the_table_has_the_documented_columns(self) -> None:
+        with duckdb.connect() as connection:
+            table = listing_feature_labels(
+                connection, pa.Table.from_pylist([text("syn-1", TENANT)], schema=TEXT_SCHEMA)
+            )
+
+        self.assertEqual(
+            [(field.name, field.type) for field in table.schema],
+            [
+                ("source", pa.string()),
+                ("source_listing_id", pa.string()),
+                ("is_tenant_occupied", pa.bool_()),
+                ("is_bare_ownership", pa.bool_()),
+                ("furnishing", pa.string()),
+                ("transformation_version", pa.string()),
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
