@@ -20,7 +20,7 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` from Silver's whole `listing` and `listing_event` from Silver's whole `walk` and `observation` and replaces both, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing` and `listing_event` from Silver's whole `walk` and `observation` and replaces all three, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -39,6 +39,7 @@ listing: snapshot <snapshot-id>
 listing_text: snapshot <snapshot-id>
 listing_quality: snapshot <snapshot-id>
 listing_event: snapshot <snapshot-id>
+listing_property_group: snapshot <snapshot-id>
 ```
 
 | Exit code | Meaning |
@@ -106,6 +107,7 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing` | — | listing | Attributes of the newest detail record (`detail_observed_at`) plus `first_seen`, `last_seen`, `days_observed` over all observations. A listing seen only in search results has null attributes. |
 | `listing_text` | — | listing with a detail record | The chosen record's `title`, `location`, `features`, and `description` redacted under `redaction_version = 'r2'` (Spanish phone numbers, with or without `+34`, `0034` or a `34` glued to the number → `[phone]`; honorific plus a capitalised or all-capitals word → `[name]`). r2 added the glued `34` and the capitals to r1. A pattern change is `r3`, never an edit of `r2`. |
 | `listing_quality` | — | listing with a detail record | Twelve boolean flags, one per plausibility and location rule. A flag is an inferred label and changes no value of `listing`. See below. |
+| `listing_property_group` | — | listing with a detail record | The `property_group_id` of the listings that are certainly the same property under rule `pg1`, with the group's size and completeness. An inferred label; no listing is dropped. See below. |
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
 
@@ -152,6 +154,57 @@ thresholds are `QUALITY_THRESHOLDS` in `src/silver/rebuild.py`; the rules are
 - The table is recomputed from Silver's whole `listing` and replaced whole in every run that
   processes something, in both modes: one listing can move a centre and with it the flag of any
   other listing of its municipality.
+
+### `listing_property_group`
+
+Maps every listing with a detail record to a `property_group_id`, so that listings which are
+certainly the same property, such as one flat advertised by several agencies, count once.
+Counting distinct `property_group_id` counts properties. A group says "certainly the same
+property under rule `pg1`", never sold, rented or re-listed. Join the table to `listing` on
+`source` and `source_listing_id`.
+
+Two listings with a detail record form a **pair** when all of these hold:
+
+- equal `operation`, `municipality`, `rooms`, `bathrooms` and `sqm_built`, none of them missing;
+- the higher `price_eur` is at most 5% above the lower, compared in integers
+  (`100 × higher ≤ 105 × lower`), so exactly 5% pairs;
+- both have coordinates and lie less than 350 m apart (haversine distance on a sphere of radius
+  6,371 km);
+- floor: if either listing's `condition` is `new`, both floors are present and equal; otherwise
+  the floors are equal or at least one is missing. A missing `condition` counts as not new.
+
+The source is not compared, so listings of two sources can pair, and so can a listing and its
+later re-listing. A **group** is a connected component of the pairs: the pair rule is not
+transitive, and a partition of the listings has to be. A listing in no pair is its own group of
+one. The thresholds are named constants in `src/silver/property_group.py`; the pair rule is
+`src/silver/sql/pairs.sql`. The evidence is the manual precision check of the data-quality
+findings ([`docs/data-quality/silver-quality-2026-11.md`](data-quality/silver-quality-2026-11.md)):
+29 of 29 judgeable pairs were the same property, and every relaxation tested was uncertain. A
+change of the rule is a new `property_group_version`, never an edit of `pg1`.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `source`, `source_listing_id` | `VARCHAR` | The listing |
+| `property_group_id` | `VARCHAR` | `<source>:<source_listing_id>` of the group's smallest member, ordered by `(source, source_listing_id)` |
+| `group_size` | `INTEGER` | Listings in the group; 1 for a listing without a duplicate |
+| `group_is_complete` | `BOOLEAN` | Every two members satisfy the pair rule; false marks a group held together by a chain |
+| `property_group_version` | `VARCHAR` | `pg1` |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+- **Stable within one snapshot only.** When a listing joins a group or two groups merge, the
+  `property_group_id` can change with the next run. Join on it only within one snapshot of the
+  table; a consumer that needs a fixed mapping pins the snapshot id the run printed.
+- **Groups of more than two listings are not manually validated.** The precision check judged
+  pairs, never groups. A large group may be a development whose units are not marked as new
+  build. `group_size` and `group_is_complete` are on every row, so a consumer can cap the size
+  it trusts or exclude incomplete groups.
+- **Recall.** The rule is deliberately strict and misses roughly a third of true duplicates (see
+  the findings), so supply counted on it is still overstated.
+- **One-room homes cannot pair** while `rooms` is missing for them upstream: a missing value
+  never matches.
+- The table is recomputed from Silver's whole `listing` and replaced whole in every run that
+  processes something, in both modes: a new listing can join an existing listing's group, and a
+  changed one can leave it, so a run changes rows of listings it did not touch.
 
 ### `listing_event`
 

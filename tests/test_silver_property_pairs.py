@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import duckdb
 import pyarrow as pa
 
-from src.gold.property_group import duplicate_pairs
+from src.silver.property_group import duplicate_pairs
 
 LISTING_SCHEMA = pa.schema(
     [
@@ -73,6 +73,16 @@ class CertainPairTest(unittest.TestCase):
             pairs_of(listing(), listing(source_listing_id="syn-b")),
             [("syn", "syn-a", "syn", "syn-b")],
         )
+
+
+class SessionTest(unittest.TestCase):
+    def test_the_input_relation_is_gone_after_the_call(self) -> None:
+        table = pa.Table.from_pylist([listing()], schema=LISTING_SCHEMA)
+        with duckdb.connect() as connection:
+            duplicate_pairs(connection, table)
+
+            with self.assertRaises(duckdb.CatalogException):
+                connection.execute("SELECT count(*) FROM property_group_listing")
 
 
 PAIR = [("syn", "syn-a", "syn", "syn-b")]

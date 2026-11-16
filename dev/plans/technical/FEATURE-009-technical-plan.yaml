@@ -1,0 +1,443 @@
+# Technical plan for FEATURE-009 — Listing price history.
+# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1, M2 and M3,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+# Implementation starts after FEATURE-013 is merged to main.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-009"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-16"
+    version: "1.0"
+    total_tasks: 6
+    estimated_hours: "6"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "2.1", "2.2", "3.1", "3.2"]
+    feature_plan: "dev/plans/FEATURE-009-listing-price-history.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-009.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - The table listing_price: one row per listing and price period, ordered by source,
+      source_listing_id, period. Columns, in order, with Arrow types:
+        source                        string
+        source_listing_id             string
+        period                        int32      1 for the first observed price, rising by 1
+        price_eur                     int32      the price of the period
+        first_observed_at             timestamp(us, UTC)
+        last_observed_at              timestamp(us, UTC)
+        sightings                     int32      sightings in the period
+        previous_price_eur            int32      price of the period before; null for period 1
+        declared_previous_price_eur   int32      prev_price_eur of the period's first sighting,
+                                                 card or detail record; null without one
+        is_current                    bool       true for the listing's last period, never null
+        transformation_version        string
+    - A price sighting is a row of silver_observation with is_empty_card false and a non-null
+      price_eur, or a row of silver_listing_detail with a non-null price_eur.
+    - Sightings of one listing (source, source_listing_id) are in this total order (review M1):
+      observed_at, then cards before detail records, then price_eur, then prev_price_eur with
+      nulls last. A period is a maximal run of consecutive sightings with one price_eur. A return
+      to an earlier price is a new period.
+    - The statement is src/silver/sql/listing_price.sql. It reads the temporary tables
+      silver_observation and silver_listing_detail and takes transformation_version from the
+      DuckDB variable, like every Silver statement.
+    - listing_prices(connection, observation, listing_detail) -> pyarrow.Table in
+      src/silver/rebuild.py is the public entry point, after the pattern of listing_events(): it
+      prepares the session, replaces the two temporary tables with the given Arrow tables and
+      runs the statement. It needs PRICE_OBSERVATION_COLUMNS (source, source_listing_id,
+      observed_at, price_eur, prev_price_eur, is_empty_card) and PRICE_DETAIL_COLUMNS (source,
+      source_listing_id, observed_at, price_eur, prev_price_eur).
+    - From task 2.1 on, listing_price is the last member of SILVER_TABLES. process_landing reads
+      walk, observation and listing_detail from Silver once, before the event rule and the price
+      rule run; observation is read with the event columns followed by the price columns it
+      lacks, and each rule receives the table narrowed to its own columns (review M2).
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - Money stays integer euros. No percentage is stored.
+    - Tests use synthetic values only (source "syn", invented municipalities) and compare results
+      as Arrow rows (to_pylist()), never through fetchall.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "Price periods from sightings"
+      description: |
+        Create src/silver/sql/listing_price.sql and listing_prices() with the two column constants
+        in src/silver/rebuild.py. The statement returns the columns of the conventions except
+        previous_price_eur and declared_previous_price_eur. Do not add the table to SILVER_TABLES
+        yet.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: []
+      branch: "feature/listing-price-history/1.1-price-periods"
+      commit_message: "feat(silver): price periods of a listing from its sightings"
+      acceptance_criteria:
+        - "One price over three days gives one row with sightings 3, the first and last instants, period 1 and is_current true"
+        - "A change gives two rows; prices A, B, A give three rows with periods 1, 2, 3"
+        - "An empty card, a card without a price and a detail record without a price are ignored; a listing with none but these has no row"
+        - "A listing with a detail record and no card has one period"
+        - "A card and a detail record at one instant with different prices give the card's period first; two detail records at one instant give the lower price first"
+        - "Exactly one row per listing has is_current true, and it is the last period"
+        - "Rows are ordered by source, source_listing_id, period and carry transformation_version silver-v1"
+        - "The existing suite is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_price.py"
+          change: |
+            New file with helpers that build Arrow tables of observation rows and detail rows (the
+            columns of the two constants) and a test class calling
+            listing_prices(duckdb.connect(), observation, listing_detail). Add the cases of the
+            acceptance criteria.
+          command: "python -m unittest tests.test_silver_listing_price -v"
+          expected_failure: "ImportError: cannot import name 'listing_prices' from 'src.silver.rebuild'"
+        green:
+          change: |
+            listing_price.sql: the union of the two kinds of sightings, the total order, a period
+            number from a running count of price changes, and one row per period. listing_prices()
+            and the two constants.
+          command: "python -m unittest tests.test_silver_listing_price -v"
+        refactor:
+          change: "The header comment states what a sighting, the order and a period are; counts are cast to INTEGER."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_price.sql"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_listing_price.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/property_group.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/sql/listing_price.sql"
+        - "tests/test_silver_listing_price.py"
+      files_to_modify:
+        - "src/silver/rebuild.py"
+
+    - id: "1.2"
+      title: "Previous prices: observed and declared"
+      description: |
+        Add previous_price_eur and declared_previous_price_eur to the statement, in the column
+        order of the conventions.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.1"]
+      branch: "feature/listing-price-history/1.2-previous-prices"
+      commit_message: "feat(silver): observed and declared previous price per period"
+      acceptance_criteria:
+        - "previous_price_eur is the price of the period before and null for period 1; after A, B, A the third row has B"
+        - "declared_previous_price_eur is the prev_price_eur of the period's first sighting, for a card and for a detail record"
+        - "A later sighting of the period with another prev_price_eur does not change it; without one it is null"
+        - "The table has the eleven columns of the conventions in order"
+      tdd:
+        red:
+          test_file: "tests/test_silver_listing_price.py"
+          change: "Add the cases of the acceptance criteria and an assertion on the column names."
+          command: "python -m unittest tests.test_silver_listing_price -v"
+          expected_failure: "KeyError: 'previous_price_eur' and a column-name mismatch"
+        green:
+          change: "lag over the periods for the observed value; the first sighting's prev_price_eur for the declared one."
+          command: "python -m unittest tests.test_silver_listing_price -v"
+        refactor:
+          change: "None expected beyond the header comment."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/sql/listing_price.sql"
+        - "tests/test_silver_listing_price.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/rebuild.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/sql/listing_price.sql"
+        - "tests/test_silver_listing_price.py"
+
+    - id: "2.1"
+      title: "Every run writes listing_price"
+      description: |
+        In src/silver/rebuild.py: listing_price as the last member of SILVER_TABLES; one helper
+        that reads walk, observation and listing_detail from Silver before either rule runs and
+        returns the rows of listing_event and listing_price; both written in the existing
+        write_silver_tables call. Update the comment above the call: a run can also add a
+        sighting to any listing's history.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.0
+      depends_on: ["1.2"]
+      branch: "feature/listing-price-history/2.1-run-writes-the-table"
+      commit_message: "feat(silver): recompute listing_price in every run"
+      acceptance_criteria:
+        - "A backfill of the synthetic landing writes listing_price equal to build_tables over every run"
+        - "Commits processed one at a time and three at a time give the rows of a backfill"
+        - "A catalog whose table was dropped gains it with the next run, equal to a backfill, and no other table's schema changes"
+        - "A run with nothing pending writes no snapshot of the table"
+        - "listing_event rows are unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            Add test_tables_that_predate_listing_price_gain_it_equal_to_a_backfill after the
+            pattern of the listing_event one. The tests that enumerate SILVER_TABLES cover the
+            rest once the name is in the tuple.
+          command: "python -m unittest tests.test_silver_incremental -v"
+          expected_failure: "pyiceberg NoSuchTableError for the table listing_price"
+        green:
+          change: "The tuple entry, the helper with the single read, and the table in the write call."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_event -v"
+        refactor:
+          change: "Remove _events_from_silver if the helper replaces it; no other restructuring."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "2.2"
+      title: "A price that returns, and the report line"
+      description: |
+        src/synthetic/landing.py: one scenario function, registered in generate_landing_v3, with
+        the listing syn-returned: cards on three days at 400,000, 380,000 and 400,000 and no
+        detail record, so that it gets no quality row and cannot pair under rule pg1. The
+        reduction scenario exists already as syn-repriced (review L1). _report in
+        src/silver/rebuild.py prints `listing_price: snapshot <id>` after the
+        listing_property_group line.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["2.1"]
+      branch: "feature/listing-price-history/2.2-scenario-and-report"
+      commit_message: "feat(silver): a returning price in the synthetic landing and the listing_price report line"
+      acceptance_criteria:
+        - "The synthetic landing holds syn-returned with three priced cards on three days"
+        - "After a backfill, listing_price holds three periods for syn-returned: 400,000, 380,000 and 400,000, the third current, with previous prices null, 400,000 and 380,000"
+        - "An incremental run and a backfill each print one line `listing_price: snapshot <digits>`"
+        - "Every other test of the suite passes without a changed expectation, or the changed expectation is a count that the new listing raises by one"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            tests/test_silver_incremental.py: a test reading listing_price after a backfill and
+            asserting the three periods of syn-returned. tests/test_synthetic_landing.py: the
+            scenario is present with its three prices. tests/test_silver_cli.py: the regular
+            expression (?m)^listing_price: snapshot \d+$ beside the listing_property_group one.
+          command: "python -m unittest tests.test_silver_incremental tests.test_synthetic_landing tests.test_silver_cli -v"
+          expected_failure: "AssertionError: no row of syn-returned, and the regular expression does not match"
+        green:
+          change: "The scenario function and its registration; the table's name in the tuple _report iterates."
+          command: "python -m unittest tests.test_silver_incremental tests.test_synthetic_landing tests.test_silver_cli -v"
+        refactor:
+          change: "The scenario's comment says what it is for."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/synthetic/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_synthetic_landing.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/synthetic/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_synthetic_landing.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "3.1"
+      title: "Runbook and README"
+      description: |
+        docs/silver-rebuild.md: add listing_price to "The tables" and a section of its own: what a
+        sighting is, the order, what a period is, the eleven columns, and the reading. The reading
+        states that listing.price_eur stays the price of the detail record and the current price
+        is the row with is_current; that is_current means the last price seen, not that the
+        listing is online; that previous_price_eur is observed and declared_previous_price_eur is
+        the portal's statement; that weekly sightings hide short-lived prices; and that the table
+        is recomputed and replaced whole in every run. Add the report line to the example output
+        and the table to the incremental-mode description. README.md: the status text counts one
+        more Iceberg table.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.2"]
+      branch: "feature/listing-price-history/3.1-docs"
+      commit_message: "docs(silver): describe listing_price"
+      acceptance_criteria:
+        - "The runbook states the sighting, the order, the period, the columns and the reading"
+        - "The README counts the Silver tables correctly"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "README.md"
+
+    - id: "3.2"
+      title: "Deployment, first real run and implementation note (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR.
+        1. Wait for GitHub Actions to publish the image of the merge commit (tag = SHA).
+        2. In the operator's local, gitignored infra/silver/silver.auto.tfvars set silver_image
+           to that tag; terraform plan and apply in infra/silver. Only a new task definition
+           revision and the consumer's reference to it may change. Never stage, print or commit
+           the file.
+        3. Let the next landing commit or the catch-up start a task. No backfill. From the task
+           log take the listing_price snapshot id and the task's duration, and compare it with
+           the durations recorded in the implementation note of FEATURE-013.
+        4. In Athena, privately and as counts only: rows, listings, listings with more than one
+           period, rows with is_current, reductions and increases (previous_price_eur above or
+           below price_eur), and periods with a declared previous price; and the same counts
+           from the rule written in Athena SQL over observation and listing_detail of the same
+           run, with the total order of the conventions. All counts must be equal, and rows with
+           is_current must equal listings. No row is returned or saved.
+        5. Write dev/plans/implementations/FEATURE-009-listing-price-history.md with the counts,
+           the share of listings whose current price differs from listing.price_eur, the
+           snapshot date and the durations; set the feature plan to complete, tick its success
+           criteria, add the progress-log entry and update the registry row.
+        Every AWS action needs explicit user approval in chat.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["3.1"]
+      branch: "feature/listing-price-history/3.2-first-run-record"
+      commit_message: "docs(plans): FEATURE-009 first run and price period counts"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0 and prints a listing_price snapshot"
+        - "The counts of the table equal the Athena implementation of the rule on the same run's tables"
+        - "Rows with is_current equal the listings in the table"
+        - "The task duration before and after is recorded"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-009-listing-price-history.md"
+        - "dev/plans/FEATURE-009-listing-price-history.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-009-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous tag and apply; drop the Silver table listing_price; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-009-listing-price-history.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-009-listing-price-history.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-009-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/listing-price-history/integration"
+    task_branch_strategy: |
+      Create the integration branch from main after the final PR of FEATURE-013 is merged; main
+      then holds this feature's plan, review and technical plan. Task 1.1 starts from the
+      integration branch; each later task up to 3.1 starts from the integration branch after its
+      predecessor is merged. The tasks share one statement, rebuild.py and one test file, so none
+      runs in parallel. Task 3.2 starts from main after the final PR is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 2.1, 2.2, 3.1, never rewriting history, and run
+      validation.final_commands there. The final PR goes from the integration branch to main.
+      Task 3.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): listing price history"
+    final_pr_description: |
+      Implements FEATURE-009: Silver gains listing_price, one row per listing and price period
+      from search cards and detail records, recomputed whole in every run. See
+      dev/reviews/REVIEW-FEATURE-009.md (approved). The table is created by the first run after
+      deployment; no backfill and no infrastructure change.
+
+  notes:
+    - "Never print, log or commit a real listing id or price of a listing; task 3.2 outputs counts only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image in silver.auto.tfvars changes, by the operator, in task 3.2."
+    - "Read walk, observation and listing_detail from Silver before listing_events() or listing_prices() is called: each replaces the temporary tables with its own columns only."
+    - "Real Silver held no two priced sightings of one listing at one instant on 2026-11-16; the tie rule exists for determinism, and the synthetic landing exercises it (syn-tied, syn-repriced)."
+    - "listing.price_eur does not change. Replacing it would need a new transformation_version and a backfill and is out of scope."
+    - "The synthetic listing syn-returned must not get a detail record: it would enter listing_quality and could pair under rule pg1."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

@@ -1,4 +1,4 @@
-"""Property groups: connected components of the pairs, and the dataset's rows."""
+"""Property groups: connected components of the pairs, and the rows of the Silver table."""
 
 import itertools
 import unittest
@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 
 import pyarrow as pa
 
-from src.gold.property_group import group_of, property_group_rows
+from src.silver.property_group import group_of, property_group_rows
 
 A, B, C, D, E = (("syn", f"syn-{name}") for name in "abcde")
 F, G, H = (("syn", f"syn-{name}") for name in "fgh")
 
-# The dataset's contract (feature plan, Design): column names, types and order.
+# The table's contract (feature plan, Design): column names, types and order.
 CONTRACT = pa.schema(
     [
         ("source", pa.string()),
@@ -20,12 +20,10 @@ CONTRACT = pa.schema(
         ("group_size", pa.int32()),
         ("group_is_complete", pa.bool_()),
         ("property_group_version", pa.string()),
-        ("silver_listing_snapshot_id", pa.int64()),
-        ("built_at", pa.timestamp("us", tz="UTC")),
+        ("transformation_version", pa.string()),
     ]
 )
-SNAPSHOT_ID = 4242
-BUILT_AT = datetime(2026, 11, 14, 12, 30, tzinfo=UTC)
+TRANSFORMATION_VERSION = "silver-test"
 
 
 def pairs_table(*pairs: tuple[tuple[str, str], tuple[str, str]]) -> pa.Table:
@@ -81,7 +79,9 @@ class PropertyGroupRowsTest(unittest.TestCase):
         # A-B a pair; C-D-E a chain (C and E do not pair); F and G alone; H has no detail record.
         listing = listing_table([G, E, F, D, C, B, A], [H])
         pairs = pairs_table((A, B), (C, D), (D, E))
-        self.rows = property_group_rows(listing, pairs, snapshot_id=SNAPSHOT_ID, built_at=BUILT_AT)
+        self.rows = property_group_rows(
+            listing, pairs, transformation_version=TRANSFORMATION_VERSION
+        )
 
     def test_one_row_per_listing_with_a_detail_record_in_the_contract(self) -> None:
         self.assertEqual(self.rows.schema, CONTRACT)
@@ -107,23 +107,28 @@ class PropertyGroupRowsTest(unittest.TestCase):
             ],
         )
 
-    def test_every_row_carries_the_rule_version_the_snapshot_and_the_build_time(self) -> None:
+    def test_every_row_carries_the_rule_version_and_the_transformation_version(self) -> None:
         for row in self.rows.to_pylist():
             with self.subTest(listing=row["source_listing_id"]):
                 self.assertEqual(row["property_group_version"], "pg1")
-                self.assertEqual(row["silver_listing_snapshot_id"], SNAPSHOT_ID)
-                self.assertEqual(row["built_at"], BUILT_AT)
-                self.assertEqual(row["built_at"].utcoffset().total_seconds(), 0)
+                self.assertEqual(row["transformation_version"], TRANSFORMATION_VERSION)
 
     def test_a_complete_group_of_three(self) -> None:
         rows = property_group_rows(
             listing_table([A, B, C], []),
             pairs_table((A, B), (A, C), (B, C)),
-            snapshot_id=SNAPSHOT_ID,
-            built_at=BUILT_AT,
+            transformation_version=TRANSFORMATION_VERSION,
         )
         self.assertEqual(rows.column("group_is_complete").to_pylist(), [True, True, True])
         self.assertEqual(rows.column("group_size").to_pylist(), [3, 3, 3])
+
+    def test_no_listing_gives_an_empty_table_in_the_contract(self) -> None:
+        rows = property_group_rows(
+            listing_table([], []), pairs_table(), transformation_version=TRANSFORMATION_VERSION
+        )
+
+        self.assertEqual(rows.schema, CONTRACT)
+        self.assertEqual(rows.num_rows, 0)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,12 @@ from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.ingest import ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
+from src.silver.property_group import (
+    PROPERTY_GROUP_LISTING_COLUMNS,
+    PROPERTY_GROUP_TABLE,
+    duplicate_pairs,
+    property_group_rows,
+)
 from src.silver.sink import SilverSchemaError, replace_days, upsert_rows, write_silver_tables
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
@@ -61,6 +67,12 @@ QUALITY_LISTING_COLUMNS = (
     "year_built",
     "latitude",
     "longitude",
+)
+
+# The columns of Silver listing that the label rules read: quality flags and property groups.
+LABEL_LISTING_COLUMNS = (
+    *QUALITY_LISTING_COLUMNS,
+    *(name for name in PROPERTY_GROUP_LISTING_COLUMNS if name not in QUALITY_LISTING_COLUMNS),
 )
 
 # Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
@@ -211,14 +223,15 @@ def process_landing(
             run_started=run_started,
             properties=properties,
         )
-    # A run can retract or add events of any listing, and move a municipality's centre and with
-    # it the flag of any listing, so both tables are recomputed and replaced whole; they read
-    # Silver after this run's days and listings are written.
+    # A run can retract or add events of any listing, move a municipality's centre and with it
+    # the flag of any listing, and join or split property groups of listings it did not touch,
+    # so these tables are recomputed and replaced whole; they read Silver after this run's days
+    # and listings are written.
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
         {
-            "listing_quality": _quality_from_silver(connection, catalog),
+            **_labels_from_silver(connection, catalog),
             "listing_event": _events_from_silver(connection, catalog),
         },
         properties,
@@ -370,11 +383,21 @@ def _compute_listings(
     return listing, listing_text
 
 
-def _quality_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:
-    """``listing_quality`` over Silver's current listing."""
-    return listing_quality(
-        connection, _silver_columns(connection, catalog, "listing", QUALITY_LISTING_COLUMNS)
-    )
+def _labels_from_silver(
+    connection: duckdb.DuckDBPyConnection, catalog: Catalog
+) -> dict[str, pa.Table]:
+    """``listing_quality`` and the property groups over one read of Silver's current listing."""
+    # Read before listing_quality(): it replaces silver_listing, which the read falls back to
+    # while the catalog has no listing table, with the quality columns only.
+    listing = _silver_columns(connection, catalog, "listing", LABEL_LISTING_COLUMNS)
+    return {
+        "listing_quality": listing_quality(connection, listing.select(QUALITY_LISTING_COLUMNS)),
+        PROPERTY_GROUP_TABLE: property_group_rows(
+            listing,
+            duplicate_pairs(connection, listing),
+            transformation_version=TRANSFORMATION_VERSION,
+        ),
+    }
 
 
 def _events_from_silver(connection: duckdb.DuckDBPyConnection, catalog: Catalog) -> pa.Table:
@@ -541,7 +564,13 @@ def _report(result: ProcessResult) -> None:
     for name in DAY_TABLES:
         print(f"{name}: {len(result.days[name])} days, snapshot {result.snapshot_ids.get(name)}")
     print(f"affected listings: {result.affected}")
-    for name in ("listing", "listing_text", "listing_quality", "listing_event"):
+    for name in (
+        "listing",
+        "listing_text",
+        "listing_quality",
+        "listing_event",
+        PROPERTY_GROUP_TABLE,
+    ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
 
 

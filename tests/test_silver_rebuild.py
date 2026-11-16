@@ -10,6 +10,7 @@ from pyiceberg.catalog.sql import SqlCatalog
 
 from src.contracts import landing_v3_sha256
 from src.silver.landing import LandingContractError
+from src.silver.property_group import PROPERTY_GROUP_TABLE
 from src.silver.rebuild import (
     NAMESPACE,
     SILVER_TABLES,
@@ -21,6 +22,9 @@ from src.silver.sink import SilverSchemaError, write_silver_tables
 from src.synthetic.landing import generate_landing_v3
 
 STARTED_AT = datetime(2026, 10, 8, 6, 0, tzinfo=UTC)
+
+# Every table a run writes: those of build_tables and the property groups computed in Python.
+WRITTEN_TABLES = (*SILVER_TABLES, PROPERTY_GROUP_TABLE)
 
 
 class TestBackfill(unittest.TestCase):
@@ -59,8 +63,8 @@ class TestBackfill(unittest.TestCase):
     def test_every_table_is_committed_and_its_snapshot_holds_its_rows(self) -> None:
         result = self.run_backfill()
 
-        self.assertEqual(set(SILVER_TABLES), set(result.snapshot_ids))
-        for table in SILVER_TABLES:
+        self.assertEqual(set(WRITTEN_TABLES), set(result.snapshot_ids))
+        for table in WRITTEN_TABLES:
             with self.subTest(table=table):
                 rows = self.scan(table, result.snapshot_ids[table])
                 self.assertGreater(len(rows), 0)
@@ -86,7 +90,7 @@ class TestBackfill(unittest.TestCase):
 
         result = self.run_backfill(connection)
 
-        self.assertEqual(set(SILVER_TABLES), set(result.snapshot_ids))
+        self.assertEqual(set(WRITTEN_TABLES), set(result.snapshot_ids))
 
     def test_non_conforming_landing_creates_no_table(self) -> None:
         # A backfill reads only the text files of chosen records, so the removed file must be one
@@ -96,7 +100,7 @@ class TestBackfill(unittest.TestCase):
         with self.assertRaises(LandingContractError):
             self.run_backfill()
 
-        for table in SILVER_TABLES:
+        for table in WRITTEN_TABLES:
             with self.subTest(table=table):
                 self.assertFalse(self.catalog.table_exists(f"{NAMESPACE}.{table}"))
 
@@ -104,11 +108,11 @@ class TestBackfill(unittest.TestCase):
         # Regression guard for the total orders: an ordering that loses a tiebreaker would let the
         # second backfill keep different rows.
         self.run_backfill()
-        first = {table: self.scan(table) for table in SILVER_TABLES}
+        first = {table: self.scan(table) for table in WRITTEN_TABLES}
 
         self.run_backfill()
 
-        for table in SILVER_TABLES:
+        for table in WRITTEN_TABLES:
             with self.subTest(table=table):
                 self.assertEqual(first[table], self.scan(table))
 
@@ -119,13 +123,13 @@ class TestBackfill(unittest.TestCase):
         for table in ("walk", "observation", "listing", "listing_text"):
             rows = self.catalog.load_table(f"{NAMESPACE}.{table}").scan().to_arrow()
             old[table] = rows.drop_columns([c for c in ("run_id",) if c in rows.schema.names])
-        for table in (*SILVER_TABLES, "landing_ingest"):
+        for table in (*WRITTEN_TABLES, "landing_ingest"):
             self.catalog.drop_table(f"{NAMESPACE}.{table}")
         write_silver_tables(self.catalog, NAMESPACE, old, {"transformation_version": "silver-v1"})
 
     def test_a_backfill_over_feature_001_tables_adds_the_new_columns(self) -> None:
         self.run_backfill()
-        expected = {table: self.scan(table) for table in SILVER_TABLES}
+        expected = {table: self.scan(table) for table in WRITTEN_TABLES}
         self.feature_001_tables()
         old_snapshot = (
             self.catalog.load_table(f"{NAMESPACE}.listing").current_snapshot().snapshot_id
@@ -133,7 +137,7 @@ class TestBackfill(unittest.TestCase):
 
         self.run_backfill()
 
-        for table in SILVER_TABLES:
+        for table in WRITTEN_TABLES:
             with self.subTest(table=table):
                 self.assertEqual(expected[table], self.scan(table))
         old = (

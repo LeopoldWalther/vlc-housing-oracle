@@ -1,0 +1,528 @@
+# Technical plan for FEATURE-013 — Property groups move from Gold to Silver.
+# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1 to M4,
+# folded into the feature plan. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-013"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-16"
+    version: "1.0"
+    total_tasks: 7
+    estimated_hours: "6"
+    risk_level: "low"
+    critical_path: ["1.1", "1.2", "2.1", "2.2", "2.3", "3.1", "3.2"]
+    feature_plan: "dev/plans/FEATURE-013-property-groups-in-silver.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-013.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+
+  conventions: |
+    - The table listing_property_group: one row per listing of Silver's listing with a detail
+      record (detail_observed_at IS NOT NULL), ordered by source, source_listing_id. Columns, in
+      order, with Arrow types:
+        source                  string
+        source_listing_id       string
+        property_group_id       string   "<source>:<source_listing_id>" of the group's smallest
+                                         member by (source, source_listing_id)
+        group_size              int32    1 for a listing in no pair
+        group_is_complete       bool     the group of n members holds n * (n - 1) / 2 pairs
+        property_group_version  string   "pg1"
+        transformation_version  string
+      The Gold columns silver_listing_snapshot_id and built_at do not exist in Silver.
+    - Rule pg1 is unchanged. src/silver/sql/pairs.sql is a copy of src/gold/sql/pairs.sql in
+      which only the relation name changes, from gold_listing to property_group_listing; the
+      macro, the conditions, the order and the header comment stay (review L1).
+    - src/silver/property_group.py holds: PROPERTY_GROUP_TABLE = "listing_property_group",
+      PROPERTY_GROUP_VERSION = "pg1", PRICE_GAP_MAX_PERCENT = 5, DISTANCE_MAX_METERS = 350,
+      PROPERTY_GROUP_LISTING_COLUMNS (the thirteen columns Gold's LISTING_COLUMNS names, in that
+      order), PROPERTY_GROUP_SCHEMA, and three public functions:
+        duplicate_pairs(connection, listing) -> pyarrow.Table
+        group_of(pairs) -> dict[ListingKey, ListingKey]
+        property_group_rows(listing, pairs, *, transformation_version: str) -> pyarrow.Table
+      Their behaviour is that of the Gold functions. The module does not import
+      src.silver.rebuild, because rebuild.py imports it; the transformation version is passed in.
+    - duplicate_pairs materialises its result and then unregisters property_group_listing, as
+      listing_quality() does with its input.
+    - Tasks 1.1 and 1.2 create copies and leave src/gold and its tests untouched; task 2.3
+      deletes them (review M1). Do not make Gold import from Silver.
+    - The table is not added to SILVER_TABLES: that tuple names the tables build_tables computes
+      from one SQL file each. Tests that enumerate Silver's tables use
+      (*SILVER_TABLES, PROPERTY_GROUP_TABLE) (review M3).
+    - process_landing reads Silver's listing once, after the listings are written, with a
+      constant LABEL_LISTING_COLUMNS: QUALITY_LISTING_COLUMNS followed by the columns of
+      PROPERTY_GROUP_LISTING_COLUMNS it lacks. listing_quality() receives that table narrowed to
+      QUALITY_LISTING_COLUMNS; the property groups are computed from the same table. The read
+      happens before listing_quality() is called, because that call replaces the temporary table
+      silver_listing that _silver_columns falls back to (review M3).
+    - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
+      about other tables changes.
+    - Tests use synthetic values only (source "syn", invented municipalities) and compare results
+      as Arrow rows (to_pylist()), never through fetchall.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "The pair rule under Silver"
+      description: |
+        Create src/silver/property_group.py with the constants, PROPERTY_GROUP_LISTING_COLUMNS and
+        duplicate_pairs(), and src/silver/sql/pairs.sql as the copied statement reading
+        property_group_listing. Create tests/test_silver_property_pairs.py as a copy of
+        tests/test_gold_property_pairs.py that imports from src.silver.property_group; every case
+        and expectation stays. Do not touch src/gold or its tests.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: []
+      branch: "feature/property-groups-in-silver/1.1-pair-rule"
+      commit_message: "feat(silver): the pair rule pg1 as a Silver module"
+      acceptance_criteria:
+        - "Every case of the Gold pair tests passes against src.silver.property_group.duplicate_pairs with unchanged expectations"
+        - "pairs.sql under src/silver/sql differs from the Gold statement only in the relation name"
+        - "After the call the connection holds no registered relation property_group_listing"
+        - "src/silver/property_group.py does not import src.silver.rebuild"
+        - "The existing suite, including the Gold tests, is unchanged and green"
+      tdd:
+        red:
+          test_file: "tests/test_silver_property_pairs.py"
+          change: |
+            Copy tests/test_gold_property_pairs.py and change the import to
+            `from src.silver.property_group import duplicate_pairs`. Add one case: after
+            duplicate_pairs returns, selecting from property_group_listing on the same connection
+            raises duckdb.CatalogException.
+          command: "python -m unittest tests.test_silver_property_pairs -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.silver.property_group'"
+        green:
+          change: |
+            The module with the constants and duplicate_pairs(); the copied statement with the
+            relation renamed.
+          command: "python -m unittest tests.test_silver_property_pairs -v"
+        refactor:
+          change: "Thresholds stay named constants set as DuckDB variables; the statement's header comment names the Silver module."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/property_group.py"
+        - "src/silver/sql/pairs.sql"
+        - "tests/test_silver_property_pairs.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/rebuild.py"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/silver/property_group.py"
+        - "src/silver/sql/pairs.sql"
+        - "tests/test_silver_property_pairs.py"
+      files_to_modify: []
+
+    - id: "1.2"
+      title: "Groups and rows under Silver"
+      description: |
+        Add group_of(), property_group_rows() and PROPERTY_GROUP_SCHEMA to
+        src/silver/property_group.py. property_group_rows takes the keyword transformation_version
+        and writes it on every row; it takes neither a snapshot id nor a build time. Create
+        tests/test_silver_property_groups.py from tests/test_gold_property_groups.py with the
+        Silver schema.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["1.1"]
+      branch: "feature/property-groups-in-silver/1.2-groups-and-rows"
+      commit_message: "feat(silver): property groups and their rows as a Silver module"
+      acceptance_criteria:
+        - "Every group_of case of the Gold tests passes with unchanged expectations"
+        - "One row per listing with a detail record, ordered by key, in the seven columns and types of the conventions"
+        - "Group id, size and completeness equal the Gold expectations, including the complete group of three"
+        - "Every row carries property_group_version pg1 and the given transformation_version"
+        - "An empty listing table gives an empty table with the schema"
+      tdd:
+        red:
+          test_file: "tests/test_silver_property_groups.py"
+          change: |
+            Copy tests/test_gold_property_groups.py, import group_of and property_group_rows from
+            src.silver.property_group, replace the two lineage columns in the expected schema by
+            transformation_version, call property_group_rows(listing, pairs,
+            transformation_version="silver-test"), and replace the lineage test by one asserting
+            the rule version and the transformation version on every row. Add the empty-table
+            case.
+          command: "python -m unittest tests.test_silver_property_groups -v"
+          expected_failure: "ImportError: cannot import name 'group_of' from 'src.silver.property_group'"
+        green:
+          change: "The two functions and the schema, copied from Gold with the column change."
+          command: "python -m unittest tests.test_silver_property_groups -v"
+        refactor:
+          change: "Docstrings state the contract; no name refers to Gold."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/property_group.py"
+        - "tests/test_silver_property_groups.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/rebuild.py"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "tests/test_silver_property_groups.py"
+      files_to_modify:
+        - "src/silver/property_group.py"
+
+    - id: "2.1"
+      title: "Every run writes listing_property_group"
+      description: |
+        In src/silver/rebuild.py: LABEL_LISTING_COLUMNS; in process_landing one read of Silver's
+        listing with those columns before the label rules; listing_quality from the narrowed
+        table; the property group rows from duplicate_pairs and property_group_rows with
+        TRANSFORMATION_VERSION; the table written under PROPERTY_GROUP_TABLE in the existing
+        write_silver_tables call with listing_quality and listing_event. Remove
+        _quality_from_silver if nothing else uses it. Update the comment above the call: a run
+        can also join or split groups of listings it did not touch.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.2"]
+      branch: "feature/property-groups-in-silver/2.1-run-writes-the-table"
+      commit_message: "feat(silver): recompute listing_property_group in every run"
+      acceptance_criteria:
+        - "A backfill of the synthetic landing writes listing_property_group equal to the rule applied to the oracle's listing"
+        - "syn-twin-a and syn-twin-b form the only group, complete, named syn:syn-twin-a; syn-new-unit has group_size 1"
+        - "Commits processed one at a time and three at a time give the rows of a backfill"
+        - "A catalog whose table was dropped gains it with the next run, equal to a backfill, and no other table's schema changes"
+        - "A table overwritten with every listing as its own group equals a backfill after the next run"
+        - "A run with nothing pending writes no snapshot of the table"
+        - "The run's result names the table's snapshot id; listing_quality rows are unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            tests/test_silver_incremental.py: row_sets() and the nothing-pending test enumerate
+            (*SILVER_TABLES, PROPERTY_GROUP_TABLE); setUpClass adds the oracle rows of the table,
+            computed with duplicate_pairs and property_group_rows from the oracle's listing; the
+            backfill test iterates the oracle's keys. Add: the synthetic duplicate is the only
+            group; the predates test for the table, after the pattern of the listing_quality one;
+            and the stale-rows test: process every commit but the last (ordered by
+            run_started_at, run_id), overwrite the table through write_silver_tables with every
+            listing as its own complete group of one, assert these rows differ from the rows
+            before, process all commits, and expect the rows of a backfill.
+            tests/test_silver_rebuild.py: the assertions over SILVER_TABLES that concern
+            snapshot ids and written tables use (*SILVER_TABLES, PROPERTY_GROUP_TABLE).
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild -v"
+          expected_failure: "pyiceberg NoSuchTableError for the table listing_property_group, and the snapshot-id set comparison fails on the missing name"
+        green:
+          change: "The single read, the property group rows and the third entry of the write_silver_tables call."
+          command: "python -m unittest tests.test_silver_incremental tests.test_silver_rebuild tests.test_silver_listing_quality -v"
+        refactor:
+          change: "One small helper for the label tables if it shortens process_landing; no other restructuring."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+        - "src/silver/sql/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+
+    - id: "2.2"
+      title: "The command reports the table's snapshot"
+      description: |
+        _report in src/silver/rebuild.py prints `listing_property_group: snapshot <id>` after the
+        listing_event line.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.25
+      depends_on: ["2.1"]
+      branch: "feature/property-groups-in-silver/2.2-report-line"
+      commit_message: "feat(silver): report the listing_property_group snapshot"
+      acceptance_criteria:
+        - "An incremental run and a backfill each print one line `listing_property_group: snapshot <digits>`"
+        - "Every line printed before is unchanged"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          change: "Beside the listing_event assertion of the incremental and the backfill test, assert the regular expression (?m)^listing_property_group: snapshot \\d+$."
+          command: "python -m unittest tests.test_silver_cli -v"
+          expected_failure: "AssertionError: Regex didn't match: '(?m)^listing_property_group: snapshot \\\\d+$'"
+        green:
+          change: "The table's name in the tuple _report iterates."
+          command: "python -m unittest tests.test_silver_cli -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/gold/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "2.3"
+      title: "Remove the Gold code"
+      description: |
+        Delete the directory src/gold (the package file, property_group.py, sql/pairs.sql) and the
+        three Gold test files. Nothing else changes; documentation follows in task 3.1. The rule
+        stays reachable for task 3.2 at the commit before the merge to main.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["2.2"]
+      branch: "feature/property-groups-in-silver/2.3-remove-gold-code"
+      commit_message: "chore(gold): remove the manual property group build"
+      acceptance_criteria:
+        - "src/gold and the three tests/test_gold_property_* files no longer exist"
+        - "No file under src or tests names src.gold or src/gold"
+        - "The suite is green and every case of the removed pair and group tests exists under tests/test_silver_property_*"
+      tdd: null
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "! grep -rnE 'src[./]gold' src tests"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/gold/**"
+        - "tests/test_gold_property_pairs.py"
+        - "tests/test_gold_property_groups.py"
+        - "tests/test_gold_property_group_build.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/silver/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/gold/__init__.py"
+        - "src/gold/property_group.py"
+        - "src/gold/sql/pairs.sql"
+        - "tests/test_gold_property_pairs.py"
+        - "tests/test_gold_property_groups.py"
+        - "tests/test_gold_property_group_build.py"
+
+    - id: "3.1"
+      title: "Documentation moves to Silver"
+      description: |
+        docs/silver-rebuild.md: add listing_property_group to "The tables" and a section of its
+        own that takes over from docs/gold-property-group.md the rule pg1, the columns (the seven
+        of the conventions) and the limits. Adapt the limits: the id is stable within one snapshot
+        of the table, and a consumer that needs a fixed mapping pins that Iceberg snapshot; the
+        table is recomputed and replaced whole in every run that processes something, and why (a
+        run can join or split groups of listings it did not touch). Name
+        src/silver/property_group.py and src/silver/sql/pairs.sql as the rule's place. Add the
+        report line to the example output and the table to the incremental-mode description.
+        Delete docs/gold-property-group.md.
+        README.md: the status text counts one more Iceberg table and names the property groups
+        under Silver; the Gold paragraphs say that Gold has no dataset yet.
+        docs/data-quality/silver-quality-2026-11.md: the pointer under "Proposed rules" names the
+        Silver table, its section in the runbook and FEATURE-013; the note under the sketch says
+        that both label sets live in Silver.
+        Closed plans and reviews under dev/ keep their old links (review L3).
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["2.3"]
+      branch: "feature/property-groups-in-silver/3.1-docs"
+      commit_message: "docs(silver): describe listing_property_group under Silver"
+      acceptance_criteria:
+        - "The runbook states the rule, the seven columns, the limits and the whole-table replacement"
+        - "docs/gold-property-group.md no longer exists and no file under src, tests, docs or README.md links to it"
+        - "The README names no Gold dataset and counts the Silver tables correctly"
+        - "The findings point to the Silver table"
+        - "The leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "! grep -rn 'gold-property-group' src tests docs README.md"
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "docs/gold-property-group.md"
+        - "README.md"
+        - "docs/data-quality/silver-quality-2026-11.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "CLAUDE.md"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "docs/gold-property-group.md"
+        - "README.md"
+        - "docs/data-quality/silver-quality-2026-11.md"
+
+    - id: "3.2"
+      title: "Deployment, first real run, comparison and the Gold object (operator)"
+      description: |
+        Starts only after the integration branch is merged to main through the final PR.
+        1. Wait for GitHub Actions to publish the image of the merge commit (tag = SHA).
+        2. In the operator's local, gitignored infra/silver/silver.auto.tfvars set silver_image
+           to that tag; terraform plan and apply in infra/silver. Only a new task definition
+           revision and the consumer's reference to it may change. Never stage, print or commit
+           the file.
+        3. Let the next landing commit or the catch-up start a task. No backfill. From the task
+           log take the listing_property_group snapshot id and the task's duration (log-stream
+           creation to last event). Compare with the durations in
+           dev/plans/implementations/FEATURE-008-listing-quality.md: 84 s for a run with data,
+           30 s for a run on an empty commit.
+        4. The comparison, in memory and as counts only (review M4). Create a git work tree at
+           the first parent of the merge commit, which still holds src/gold. From there run a
+           one-off script that is kept outside the repository and never committed. It:
+             - loads the catalog and takes the current snapshots of listing and of
+               listing_property_group; it stops when the latter was not committed after the
+               former, and the operator waits for the next run;
+             - scans listing at that snapshot with the old LISTING_COLUMNS and applies the old
+               duplicate_pairs and property_group_rows;
+             - scans the Silver table and prints, for each side: rows, groups of two or more,
+               listings in such groups, incomplete groups, largest group; and across both:
+               listings on one side only, and listings whose property_group_id, group_size or
+               group_is_complete differ.
+           Both difference counts must be 0. The script writes no file and no object; no row is
+           printed. Remove the work tree afterwards.
+        5. Only after step 4 passed and with its own explicit approval: delete the Gold object
+           listing_property_group/part-0.parquet under the versioned Gold prefix.
+        6. Write dev/plans/implementations/FEATURE-013-property-groups-in-silver.md with the
+           counts beside those of the build of 2026-11-14 (21,840 rows, 1,832 groups, 4,849
+           listings in a group, 187 incomplete groups), the snapshot date and the durations; set
+           the feature plan to complete, tick its success criteria, add the progress-log entry
+           and update the registry row.
+        Every AWS action needs explicit user approval in chat.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["3.1"]
+      branch: "feature/property-groups-in-silver/3.2-first-run-record"
+      commit_message: "docs(plans): FEATURE-013 first run and comparison with the old rule"
+      acceptance_criteria:
+        - "A Silver task after the deployment exits 0 and prints a listing_property_group snapshot"
+        - "The Silver table and the rule of the commit before the merge agree on the same listing snapshot: both difference counts are 0"
+        - "The task duration before and after is recorded"
+        - "The Gold object is deleted, or the note says why it stays"
+        - "The note holds counts only; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-013-property-groups-in-silver.md"
+        - "dev/plans/FEATURE-013-property-groups-in-silver.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-013-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "analysis/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous tag and apply; drop the Silver table listing_property_group; the Gold object can be rebuilt with the command of the commit before the merge; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-013-property-groups-in-silver.md"
+      files_to_modify:
+        - "dev/plans/FEATURE-013-property-groups-in-silver.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-013-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/property-groups-in-silver/integration"
+    task_branch_strategy: |
+      Create the integration branch from main and commit the planning artifacts there first, in
+      one docs commit: the feature plans FEATURE-009 to FEATURE-013, the registry with their five
+      rows, the review of FEATURE-013 and this file. The five rows sit in one uncommitted change
+      of the registry, and a row without its plan file fails the workflow validator, so they go
+      together. Task 1.1 starts from the integration branch; each later task up to 3.1 starts
+      from the integration branch after its predecessor is merged. The tasks share one module
+      and rebuild.py, so none runs in parallel. Task 3.2 starts from main after the final PR is
+      merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 2.1, 2.2, 2.3, 3.1, never rewriting history, and run
+      validation.final_commands there. The final PR goes from the integration branch to main.
+      Task 3.2's branch goes to main through its own small PR.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): property groups move from Gold to Silver"
+    final_pr_description: |
+      Implements FEATURE-013: Silver gains listing_property_group, recomputed whole from listing
+      in every run under the unchanged rule pg1; the manual Gold build, its tests and its
+      document are removed. See dev/reviews/REVIEW-FEATURE-013.md (approved). The table is
+      created by the first run after deployment; no backfill and no infrastructure change. Also
+      registers the plans of FEATURE-009 to FEATURE-012.
+
+  notes:
+    - "Never print, log or commit a real listing id, municipality or coordinate; task 3.2 outputs counts only and its script stays outside the repository."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image in silver.auto.tfvars changes, by the operator, in task 3.2."
+    - "Read listing for the label rules before listing_quality() is called: that call replaces the temporary table silver_listing with the quality columns only."
+    - "property_group_id is stable within one snapshot of the table only; nothing in this feature may promise more."
+    - "The rule pg1, its thresholds and its version do not change. A difference in task 3.2 is a defect of the move, not a reason to adjust the rule."
+    - "The Gold layer stays in the architecture and in CLAUDE.md; it has no dataset after this feature."
+    - "FEATURE-009 to FEATURE-012 change process_landing too and start after this feature is merged."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

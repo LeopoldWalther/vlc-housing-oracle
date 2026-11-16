@@ -5,6 +5,8 @@
 --   * floor: if either condition is 'new', both floors are present and equal; otherwise they are
 --     equal or at least one is missing. A null condition counts as not new.
 -- The source is not compared. Each pair comes once, smaller (source, source_listing_id) first.
+-- Run by duplicate_pairs() in src/silver/property_group.py, which sets the two variables and
+-- registers the listings as property_group_listing.
 -- Evidence: docs/data-quality/silver-quality-2026-11.md (29 of 29 judgeable pairs were the same
 -- property; every relaxation tested was uncertain).
 CREATE OR REPLACE TEMP MACRO haversine_meters(lat_a, lon_a, lat_b, lon_b) AS
@@ -18,8 +20,8 @@ SELECT
     a.source_listing_id AS source_listing_id_a,
     b.source AS source_b,
     b.source_listing_id AS source_listing_id_b
-FROM gold_listing AS a
-JOIN gold_listing AS b
+FROM property_group_listing AS a
+JOIN property_group_listing AS b
     ON a.operation = b.operation
     AND a.municipality = b.municipality
     AND a.rooms = b.rooms

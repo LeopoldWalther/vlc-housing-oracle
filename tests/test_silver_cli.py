@@ -110,6 +110,7 @@ class TestSilverCli(unittest.TestCase):
         self.assertRegex(completed.stdout, r"(?m)^listing: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_quality: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^listing_property_group: snapshot \d+$")
 
     def test_a_second_run_finds_nothing_pending(self) -> None:
         self.run_cli("--landing", str(self.landing), "--catalog", "test")
@@ -130,6 +131,7 @@ class TestSilverCli(unittest.TestCase):
         self.assertIn(f"pending: {self.runs}", completed.stdout)
         self.assertRegex(completed.stdout, r"(?m)^listing_quality: snapshot \d+$")
         self.assertRegex(completed.stdout, r"(?m)^listing_event: snapshot \d+$")
+        self.assertRegex(completed.stdout, r"(?m)^listing_property_group: snapshot \d+$")
 
     def test_a_missing_landing_directory_is_a_usage_error(self) -> None:
         completed = self.run_cli("--landing", str(self.root / "absent"), "--catalog", "test")
