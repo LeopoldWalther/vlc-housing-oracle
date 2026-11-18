@@ -1,7 +1,7 @@
 # FEATURE-011 — Listing location from coordinates: municipality, district and census section
 
 **Status:** 🟡 In progress · **Effort:** M (~11h) · **Priority:** Medium
-**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
+**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-18
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-011.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-011-technical-plan.yaml`.
@@ -240,3 +240,10 @@ population, reference rents) are published.
     of the file and the file is checked before the first write; the axis order and the border
     rule. The review measured the join on real coordinates. The user confirmed the census
     section as the first geography.
+- **2026-11-18** — Tasks 1.1 to 3.3 implemented on `feature/listing-location/integration`.
+    The legal notice was read: CC BY 4.0 with attribution, quoted in ADR 0004; the download
+    page's footer names CC BY-SA 4.0 in one place, recorded there. The converter was run once
+    on the 2026 edition outside the repository and wrote the expected 1,841 sections; the join
+    of 23,000 random points with that vintage took 0.2 s. The image was built for ARM64 and
+    loads the spatial extension without network. Task 3.4 (upload, deployment, first run)
+    waits for the final PR and for approval.
