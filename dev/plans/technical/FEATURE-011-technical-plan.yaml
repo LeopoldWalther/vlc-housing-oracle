@@ -150,7 +150,7 @@ technical_plan:
         province codes are constants of the module. .github/workflows/ci.yml gains the step
         "Install the DuckDB spatial extension" with the command of the conventions, after the
         dependency install; README.md gains the same command in its Development block.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.1"]

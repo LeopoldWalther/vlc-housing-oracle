@@ -127,7 +127,7 @@ population, reference rents) are published.
 
 - [x] **1.1 ADR 0004 and the licence.** Record the decision, the layout and the file's licence
     and attribution. Validation: workflow check; the licence text is quoted in the ADR.
-- [ ] **1.2 Synthetic polygons and the test environment.** RED: `src/synthetic/reference.py`
+- [x] **1.2 Synthetic polygons and the test environment.** RED: `src/synthetic/reference.py`
     writes a small archive with one shapefile of squares around the synthetic coordinates in a
     projected system. Fails because the generator does not exist. CI and the README install
     DuckDB's spatial extension, which these tests need (review M1).
