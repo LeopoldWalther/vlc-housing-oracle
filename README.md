@@ -62,6 +62,7 @@ and CI runs it on every change.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
+python -c "import duckdb; duckdb.sql('INSTALL spatial')"
 
 python -m unittest discover -s tests -t .
 ruff check src tests dev && ruff format --check src tests dev
