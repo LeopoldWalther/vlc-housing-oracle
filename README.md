@@ -12,7 +12,9 @@ time-on-market, and market dynamics.
 > property groups that put listings which are certainly the same property into one group, and
 > labels read from the portal's feature list (let with tenants, bare ownership, furnishing). A
 > further table lists every feature wording with the column that carries it, so that a wording
-> nobody has read yet raises an alarm.
+> nobody has read yet raises an alarm. A run that is given a vintage of the official census
+> sections writes a twelfth table, `listing_location`: the section, district and municipality of
+> every listing's coordinates.
 > Gold and models are not built yet.
 
 ## Architecture
@@ -32,6 +34,10 @@ time-on-market, and market dynamics.
     input, so a training dataset can name the exact rows it was built from. A full rebuild remains
     as a backfill ([ADR 0001](docs/adr/0001-silver-on-iceberg.md),
     [ADR 0003](docs/adr/0003-immutable-bronze-and-landing-per-run.md)).
+- **Reference** data is public data that Silver reads beside landing, first the boundaries of
+    the census sections. It is stored as immutable vintages with a manifest that names source
+    and licence; a command of this repository converts a file that an operator downloads, and no
+    code fetches it ([ADR 0004](docs/adr/0004-reference-data.md)).
 - **Gold** is plain Parquet, readable by a browser over HTTP, and holds use-case-specific
     datasets. It has none yet; labels that describe a listing as such, like quality flags and
     property groups, live in Silver.
@@ -42,6 +48,10 @@ Listings are collected privately from a public Spanish property portal. Acquisit
 deliberately kept out of this repository. So are all real data: tests and examples run on a
 seeded synthetic landing dataset that reproduces the hard cases (replayed collection runs, runs
 across midnight, padding cards, duplicate sightings).
+
+Census-section boundaries come from the Spanish national statistics office under CC BY 4.0
+(*Elaboración propia con datos extraídos del sitio web del INE: www.ine.es*). The boundary file is
+kept out of this repository as well; tests run on invented rectangles.
 
 ## How work happens here
 
