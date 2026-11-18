@@ -82,6 +82,18 @@ LABEL_LISTING_COLUMNS = (
 # The columns of Silver listing_text that the feature rules read.
 FEATURE_TEXT_COLUMNS = ("source", "source_listing_id", "features")
 
+# Written only by a run given a census-section vintage, so it is no member of SILVER_TABLES.
+LOCATION_TABLE = "listing_location"
+
+# The columns of Silver listing that the listing_location rule reads.
+LOCATION_LISTING_COLUMNS = (
+    "source",
+    "source_listing_id",
+    "detail_observed_at",
+    "latitude",
+    "longitude",
+)
+
 # Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
 # Prices are EUR for sale and EUR per month for rent; areas are m².
 QUALITY_THRESHOLDS = {
@@ -552,6 +564,27 @@ def listing_feature_labels(
     _prepare(connection)
     _replace_silver(connection, {"listing_text": listing_text})
     return connection.sql(_statement("listing_feature_label")).to_arrow_table()
+
+
+def listing_locations(
+    connection: duckdb.DuckDBPyConnection, listing: pa.Table, sections: pa.Table
+) -> pa.Table:
+    """The ``listing_location`` rows: one per listing with a detail record.
+
+    ``listing`` needs ``LOCATION_LISTING_COLUMNS``; ``sections`` is one reference vintage with its
+    six columns. Both are registered under names of this rule and removed again, so no
+    ``silver_<table>`` of the session is replaced. The session needs DuckDB's spatial extension
+    installed.
+    """
+    _prepare(connection)
+    connection.execute("LOAD spatial")
+    connection.register("location_listing", listing)
+    connection.register("location_sections", sections)
+    try:
+        return connection.sql(_statement(LOCATION_TABLE)).to_arrow_table()
+    finally:
+        connection.unregister("location_listing")
+        connection.unregister("location_sections")
 
 
 def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
