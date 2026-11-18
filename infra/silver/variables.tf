@@ -24,6 +24,17 @@ variable "silver_image" {
   }
 }
 
+variable "census_sections" {
+  description = "The census-section vintage the Silver task reads for listing_location (ADR 0004): s3://<lake bucket>/reference/v1/census_sections/vintage=<date>. Empty: the task gets no --census-sections and writes no listing_location."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.census_sections == "" || can(regex("^s3://${var.lake_bucket}/reference/v1/census_sections/vintage=[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.census_sections))
+    error_message = "census_sections must be empty or one vintage directory under reference/v1/census_sections/ of the lake bucket, without a trailing slash."
+  }
+}
+
 variable "alert_email" {
   description = "Address that receives Silver failure mail. Set it in terraform.tfvars, which git ignores."
   type        = string
