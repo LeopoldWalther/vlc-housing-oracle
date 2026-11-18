@@ -152,7 +152,7 @@ population, reference rents) are published.
 - [x] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
     argument from a variable; `terraform validate` and a plan that changes only the task role
     policy and the task definition.
-- [ ] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.
+- [x] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.
 - [ ] **3.4 First vintage and first run (operator, with approval).** Convert and upload the 2026
     edition, deploy, then counts only: listings with a section, listings whose portal
     municipality differs from the polygon's, sections and districts in use. Recorded in

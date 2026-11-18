@@ -471,7 +471,7 @@ technical_plan:
         attribution. The report line joins the example output and the argument the command's
         description. README.md: the status text and the architecture bullet name the reference
         layer and the table.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.2"]
