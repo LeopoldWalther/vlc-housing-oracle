@@ -1,6 +1,6 @@
 # FEATURE-011 — Listing location from coordinates: municipality, district and census section
 
-**Status:** 🔵 Planned · **Effort:** M (~11h) · **Priority:** Medium
+**Status:** 🟡 In progress · **Effort:** M (~11h) · **Priority:** Medium
 **Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-011.md`).
@@ -125,7 +125,7 @@ population, reference rents) are published.
 
 ### Phase 1 — Reference data
 
-- [ ] **1.1 ADR 0004 and the licence.** Record the decision, the layout and the file's licence
+- [x] **1.1 ADR 0004 and the licence.** Record the decision, the layout and the file's licence
     and attribution. Validation: workflow check; the licence text is quoted in the ADR.
 - [ ] **1.2 Synthetic polygons and the test environment.** RED: `src/synthetic/reference.py`
     writes a small archive with one shapefile of squares around the synthetic coordinates in a
