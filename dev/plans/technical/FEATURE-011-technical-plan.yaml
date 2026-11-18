@@ -333,7 +333,7 @@ technical_plan:
         reads the file nor writes the table. main gains --census-sections <dir-or-s3> and exits
         1 on ReferenceDataError; _report prints `listing_location: snapshot <id>` after the last
         label line only for a run that wrote the table.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.75
       depends_on: ["2.1"]
