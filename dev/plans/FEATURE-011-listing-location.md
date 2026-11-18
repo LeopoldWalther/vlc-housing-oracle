@@ -141,7 +141,7 @@ population, reference rents) are published.
 - [x] **2.1 The rule.** RED: a listing inside a square gets its three codes; one without
     coordinates and one outside every square get nulls; one inside two overlapping squares gets
     the smaller code; every listing with a detail record has one row.
-- [ ] **2.2 Pipeline.** RED: a run with the argument writes the table and reports its snapshot;
+- [x] **2.2 Pipeline.** RED: a run with the argument writes the table and reports its snapshot;
     a run without it writes none; stepwise commits equal a backfill; a second vintage changes
     `reference_vintage`; an unreadable file fails the run before any write.
 

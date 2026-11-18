@@ -4,7 +4,7 @@ Each run processes the landing runs Silver has not ingested yet (ADR 0003). Run 
 repository root, or as the Fargate task's entry point::
 
     python -m src.silver.rebuild --landing <dir or s3://bucket/landing/v3> --catalog <name> \
-        [--mode incremental|backfill] [--metrics]
+        [--mode incremental|backfill] [--metrics] [--census-sections <vintage dir or s3://...>]
 """
 
 import argparse
@@ -94,6 +94,16 @@ LOCATION_LISTING_COLUMNS = (
     "longitude",
 )
 
+# The columns of one census-section vintage (ADR 0004), in the file's order.
+CENSUS_SECTION_COLUMNS = (
+    "section_code",
+    "district_code",
+    "municipality_code",
+    "municipality_name",
+    "geometry",
+    "vintage",
+)
+
 # Thresholds of the listing_quality rules, from docs/data-quality/silver-quality-2026-11.md.
 # Prices are EUR for sale and EUR per month for rent; areas are m².
 QUALITY_THRESHOLDS = {
@@ -162,6 +172,10 @@ PRICE_DETAIL_COLUMNS = (
 )
 
 
+class ReferenceDataError(ValueError):
+    """A reference vintage cannot be read or fails its check; the message holds no row value."""
+
+
 @dataclass(frozen=True)
 class ProcessResult:
     """What one incremental or backfill run did."""
@@ -191,6 +205,7 @@ def process_landing(
     mode: str,
     list_commits: Callable[[], list[LandingCommit]],
     now: Callable[[], datetime],
+    census_sections: str | None = None,
 ) -> ProcessResult:
     """Process the landing runs Silver has not ingested yet; ``backfill`` treats every run as new.
 
@@ -198,6 +213,10 @@ def process_landing(
     every run that touches them, the listings those days held before or hold now are recomputed
     from Silver's history, and the ingest log is written last: a run that stops before it leaves
     its runs pending, and repeating them gives the same rows.
+
+    ``census_sections`` names one reference vintage directory. A run given it also writes
+    ``listing_location``; the vintage is read and checked before the run's first write, so a
+    ``ReferenceDataError`` leaves every table as it was and the runs pending.
     """
     if mode not in ("incremental", "backfill"):
         raise ValueError(f"unknown mode {mode!r}")
@@ -207,6 +226,9 @@ def process_landing(
     todo = pending(commits, set(ingested))
     if not todo:
         return ProcessResult(0, (), {}, 0, {}, 0)
+    sections = (
+        None if census_sections is None else read_census_sections(connection, census_sections)
+    )
 
     known = {run_id: run.observed_dates for run_id, run in ingested.items()}
     known |= {commit.run_id: commit.observed_dates for commit in todo}
@@ -265,8 +287,9 @@ def process_landing(
     # history, move a municipality's centre and with it the flag of any listing, join or split
     # property groups of listings it did not touch, and change any listing's features and with
     # them the counts of any wording, so these tables are recomputed and replaced whole; they
-    # read Silver after this run's days and listings are written.
-    labels = _labels_from_silver(connection, catalog)
+    # read Silver after this run's days and listings are written. So is listing_location, whose
+    # polygons can change with the vintage the run is given.
+    labels = _labels_from_silver(connection, catalog, sections)
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
@@ -421,19 +444,56 @@ def _compute_listings(
     return listing, listing_text
 
 
+def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa.Table:
+    """One census-section vintage, read from its directory (local or ``s3://``) and checked.
+
+    The file must be readable, hold the six columns and at least one row, and carry one vintage
+    on every row. Anything else raises ``ReferenceDataError`` naming the path and the defect.
+    """
+    file = f"{path.rstrip('/')}/part-0.parquet"
+    # The directory is named vintage=<date>: without this the path would supply the column.
+    source = "read_parquet(?, hive_partitioning = false)"
+    try:
+        described = connection.execute(f"DESCRIBE SELECT * FROM {source}", [file]).fetchall()
+        present = {name for name, *_ in described}
+        missing = [name for name in CENSUS_SECTION_COLUMNS if name not in present]
+        if missing:
+            raise ReferenceDataError(f"census sections {file} lack {', '.join(missing)}")
+        sections = connection.execute(
+            f"SELECT {', '.join(CENSUS_SECTION_COLUMNS)} FROM {source}", [file]
+        ).to_arrow_table()
+    except duckdb.Error as error:
+        raise ReferenceDataError(f"census sections {file} cannot be read") from error
+    if sections.num_rows == 0:
+        raise ReferenceDataError(f"census sections {file} hold no row")
+    vintages = pc.count_distinct(sections["vintage"], mode="all").as_py()
+    if vintages != 1 or sections["vintage"].null_count:
+        raise ReferenceDataError(f"census sections {file} do not carry one vintage on every row")
+    return sections
+
+
 def _labels_from_silver(
-    connection: duckdb.DuckDBPyConnection, catalog: Catalog
+    connection: duckdb.DuckDBPyConnection, catalog: Catalog, sections: pa.Table | None
 ) -> dict[str, pa.Table]:
     """The label tables over one read of Silver's current ``listing`` and ``listing_text``.
 
     These are ``listing_quality``, the property groups, ``feature_pattern`` and
-    ``listing_feature_label``.
+    ``listing_feature_label``, and ``listing_location`` when ``sections`` are given.
     """
     # Read both before any rule: each rule replaces silver_listing or silver_listing_text, which
     # the reads fall back to while the catalog has no such table, with its own columns only.
     listing = _silver_columns(connection, catalog, "listing", None)
     listing_text = _silver_columns(connection, catalog, "listing_text", FEATURE_TEXT_COLUMNS)
     grouped = listing.select(LABEL_LISTING_COLUMNS)
+    located = (
+        {}
+        if sections is None
+        else {
+            LOCATION_TABLE: listing_locations(
+                connection, listing.select(LOCATION_LISTING_COLUMNS), sections
+            )
+        }
+    )
     return {
         "listing_quality": listing_quality(connection, listing.select(QUALITY_LISTING_COLUMNS)),
         PROPERTY_GROUP_TABLE: property_group_rows(
@@ -443,6 +503,7 @@ def _labels_from_silver(
         ),
         "feature_pattern": feature_patterns(connection, listing, listing_text),
         "listing_feature_label": listing_feature_labels(connection, listing_text),
+        **located,
     }
 
 
@@ -634,7 +695,10 @@ def s3_commits(s3_client, location: str, exclude: Collection[str]) -> list[Landi
 
 
 def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client=None) -> int:
-    """Run Silver once; exit 0 on success, 1 when landing or a table schema is refused, 2 on usage."""
+    """Run Silver once; exit 0 on success, 2 on usage.
+
+    Exit 1 when landing, a table schema or the census-section vintage is refused.
+    """
     parser = argparse.ArgumentParser(
         prog="python -m src.silver.rebuild", description="Maintain Silver from landing v3."
     )
@@ -652,6 +716,11 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         "--metrics",
         action="store_true",
         help="publish PendingRuns and, after a run, UnknownFeaturePatterns to CloudWatch",
+    )
+    parser.add_argument(
+        "--census-sections",
+        help="one census-section vintage, a directory or s3://bucket/prefix (ADR 0004); "
+        "a run given it also writes listing_location",
     )
     arguments = parser.parse_args(argv)
     on_s3 = arguments.landing.startswith("s3://")
@@ -676,7 +745,7 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
             print("nothing pending")
         else:
             with duckdb.connect() as connection:
-                if on_s3:
+                if on_s3 or (arguments.census_sections or "").startswith("s3://"):
                     _read_s3_through_duckdb(connection)
                 result = process_landing(
                     connection,
@@ -685,11 +754,12 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
                     mode=arguments.mode,
                     list_commits=lambda: todo,
                     now=lambda: datetime.now(UTC),
+                    census_sections=arguments.census_sections,
                 )
             remaining = 0
             unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
-    except (LandingContractError, SilverSchemaError) as error:
+    except (LandingContractError, SilverSchemaError, ReferenceDataError) as error:
         print(f"Silver run refused: {error}", file=sys.stderr)
         return 1
     finally:
@@ -723,6 +793,8 @@ def _report(result: ProcessResult) -> None:
         "listing_feature_label",
     ):
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
+    if LOCATION_TABLE in result.snapshot_ids:
+        print(f"{LOCATION_TABLE}: snapshot {result.snapshot_ids[LOCATION_TABLE]}")
     print(f"unknown feature patterns: {result.unknown_feature_patterns}")
 
 
