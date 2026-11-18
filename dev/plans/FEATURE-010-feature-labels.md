@@ -1,6 +1,6 @@
 # FEATURE-010 — Labels from listing features, and a check for unread features
 
-**Status:** 🟡 In progress · **Effort:** M (~9h) · **Priority:** High
+**Status:** 🟢 Complete · **Effort:** M (~9h) · **Priority:** High
 **Branch root:** `feature/feature-labels` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-010.md`).
@@ -118,38 +118,38 @@ is noticed in the next run and not months later.
 
 ### Phase 1 — Wordings
 
-- [ ] **1.1 The registry and the normalisation.** RED: two features that differ only in a
+- [x] **1.1 The registry and the normalisation.** RED: two features that differ only in a
     number are one wording; every registry entry is already normalised and unique; every target
     is a `listing` column, a label of this feature or `unread`; the registry has 100 entries,
     one of them by digest.
-- [ ] **1.2 The pattern table.** RED: a wording in the registry carries its target; one outside
+- [x] **1.2 The pattern table.** RED: a wording in the registry carries its target; one outside
     it has a null target; `listings_target_missing` counts listings whose target column is
     missing. Fails because the function does not exist.
 
 ### Phase 2 — Labels
 
-- [ ] **2.1 Sale labels.** RED: a listing with the tenant wording is tenant-occupied; one with
+- [x] **2.1 Sale labels.** RED: a listing with the tenant wording is tenant-occupied; one with
     the bare-ownership wording is bare ownership; one with neither has false, never null; a
     listing with a detail record but an empty feature list has a row.
-- [ ] **2.2 Furnishing.** RED: each of the three wordings gives its value; none gives null; two
+- [x] **2.2 Furnishing.** RED: each of the three wordings gives its value; none gives null; two
     conflicting wordings give null.
 
 ### Phase 3 — The run writes the tables
 
-- [ ] **3.1 Pipeline.** RED: a backfill of the synthetic landing writes both tables; stepwise
+- [x] **3.1 Pipeline.** RED: a backfill of the synthetic landing writes both tables; stepwise
     commits give the same rows; a catalog that predates them gains them without a backfill.
-- [ ] **3.2 Synthetic scenario, report and metric.** RED: the generator holds a listing with
+- [x] **3.2 Synthetic scenario, report and metric.** RED: the generator holds a listing with
     a furnishing wording, a sale with a tenant and one feature outside the registry; the command
     prints both snapshots and `unknown feature patterns: 1`; with `--metrics` the fake client
     receives the value.
 
 ### Phase 4 — Operation
 
-- [ ] **4.1 Alarm.** One CloudWatch alarm in `infra/silver/alerts.tf`; `terraform validate` and
+- [x] **4.1 Alarm.** One CloudWatch alarm in `infra/silver/alerts.tf`; `terraform validate` and
     `plan` show one resource added.
-- [ ] **4.2 Documentation.** `docs/silver-rebuild.md`: both tables, how to read them, and how to
+- [x] **4.2 Documentation.** `docs/silver-rebuild.md`: both tables, how to read them, and how to
     add a wording to the registry.
-- [ ] **4.3 Deployment and first run (operator, with approval).** Counts only, against the same
+- [x] **4.3 Deployment and first run (operator, with approval).** Counts only, against the same
     rule in Athena: 100 wordings and 0 unknown; 1,157 tenant, 71 bare ownership; furnishing
     4,488 / 834 / 391. Recorded in `dev/plans/implementations/FEATURE-010-feature-labels.md`,
     with the counts per unread wording for the acquisition side.
@@ -204,14 +204,14 @@ is noticed in the next run and not months later.
 
 ## Success criteria
 
-- [ ] Every listing with a text row has one label row, and no boolean is null.
-- [ ] Every wording seen has one row in `feature_pattern`, and the real data has no unknown one.
-- [ ] A feature outside the registry is reported, published and alarmed.
-- [ ] The real run's counts equal the same rule in Athena.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak, infrastructure and workflow checks pass
-- [ ] Both tables and the registry procedure are documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] Every listing with a text row has one label row, and no boolean is null.
+- [x] Every wording seen has one row in `feature_pattern`, and the real data has no unknown one.
+- [x] A feature outside the registry is reported, published and alarmed.
+- [x] The real run's counts equal the same rule in Athena.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak, infrastructure and workflow checks pass
+- [x] Both tables and the registry procedure are documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -231,3 +231,7 @@ is noticed in the next run and not months later.
     digest because the leak guard refuses a word of it; the target `unread` for meanings no
     column carries; the exact normalisation and what "missing" means; the registry before the
     pattern table; the alarm's handling of missing data. The user approved the public registry.
+- **2026-11-16** — Task 4.3: the image of merge commit `9be095f` was deployed, and the first
+    run wrote both tables with no unknown wording; every count equals the same rule in Athena
+    and the alarm is OK. See the [implementation note](implementations/FEATURE-010-feature-labels.md),
+    which lists the unread wordings for the acquisition side. Feature complete.
