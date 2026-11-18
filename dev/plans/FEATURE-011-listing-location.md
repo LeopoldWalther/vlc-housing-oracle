@@ -147,7 +147,7 @@ population, reference rents) are published.
 
 ### Phase 3 — Operation
 
-- [ ] **3.1 Image.** The spatial extension is installed at build time, and the build loads it
+- [x] **3.1 Image.** The spatial extension is installed at build time, and the build loads it
     once as the job's user, so a missing extension fails the build.
 - [ ] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
     argument from a variable; `terraform validate` and a plan that changes only the task role

@@ -393,7 +393,7 @@ technical_plan:
         Dockerfile: the build-time statement that installs httpfs and aws as the job's user also
         installs spatial and then loads it once, so a missing or unloadable extension fails the
         build. The comment above it names the third extension and why it is baked in.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
