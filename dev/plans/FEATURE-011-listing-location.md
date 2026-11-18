@@ -149,7 +149,7 @@ population, reference rents) are published.
 
 - [x] **3.1 Image.** The spatial extension is installed at build time, and the build loads it
     once as the job's user, so a missing extension fails the build.
-- [ ] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
+- [x] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
     argument from a variable; `terraform validate` and a plan that changes only the task role
     policy and the task definition.
 - [ ] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.

@@ -426,7 +426,7 @@ technical_plan:
         one vintage directory. infra/silver/ecs.tf: when it is not empty, the Silver task's
         command gains --census-sections with it; the task role may read objects under
         reference/v1/ of the lake bucket and list that prefix. Nothing is applied in this task.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.1"]
