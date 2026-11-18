@@ -106,7 +106,7 @@ technical_plan:
         library in Python; point-in-polygon in plain SQL). CLAUDE.md: the Target Architecture
         section names the reference layer in one short entry. If the licence does not allow the
         use, stop, leave the task in progress and report to the user.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: []
@@ -150,7 +150,7 @@ technical_plan:
         province codes are constants of the module. .github/workflows/ci.yml gains the step
         "Install the DuckDB spatial extension" with the command of the conventions, after the
         dependency install; README.md gains the same command in its Development block.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.1"]
@@ -213,7 +213,7 @@ technical_plan:
         existing vintage directory, an archive with no or several .shp files, a shapefile that
         lacks one of the five fields (naming it), a province without a row, and a section code
         that occurs twice. No code touches the network.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.75
       depends_on: ["1.2"]
@@ -270,7 +270,7 @@ technical_plan:
         under names of its own, runs the statement and unregisters them, so it replaces no
         silver_<table>. The statement gives the table of the conventions. Do not write the table
         in a run yet.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.3"]
@@ -333,7 +333,7 @@ technical_plan:
         reads the file nor writes the table. main gains --census-sections <dir-or-s3> and exits
         1 on ReferenceDataError; _report prints `listing_location: snapshot <id>` after the last
         label line only for a run that wrote the table.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.75
       depends_on: ["2.1"]
@@ -393,7 +393,7 @@ technical_plan:
         Dockerfile: the build-time statement that installs httpfs and aws as the job's user also
         installs spatial and then loads it once, so a missing or unloadable extension fails the
         build. The comment above it names the third extension and why it is baked in.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["2.2"]
@@ -426,7 +426,7 @@ technical_plan:
         one vintage directory. infra/silver/ecs.tf: when it is not empty, the Silver task's
         command gains --census-sections with it; the task role may read objects under
         reference/v1/ of the lake bucket and list that prefix. Nothing is applied in this task.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.1"]
@@ -471,7 +471,7 @@ technical_plan:
         attribution. The report line joins the example output and the argument the command's
         description. README.md: the status text and the architecture bullet name the reference
         layer and the table.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["3.2"]
