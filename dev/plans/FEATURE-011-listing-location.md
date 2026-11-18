@@ -131,7 +131,7 @@ population, reference rents) are published.
     writes a small archive with one shapefile of squares around the synthetic coordinates in a
     projected system. Fails because the generator does not exist. CI and the README install
     DuckDB's spatial extension, which these tests need (review M1).
-- [ ] **1.3 Converter.** RED: converting the synthetic archive writes the six columns in
+- [x] **1.3 Converter.** RED: converting the synthetic archive writes the six columns in
     WGS84, keeps only the requested province, and writes a manifest with the archive's hash;
     an existing vintage, an archive without exactly one shapefile and a missing field are
     refused. Fails because the command does not exist.

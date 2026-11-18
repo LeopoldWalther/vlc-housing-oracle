@@ -213,7 +213,7 @@ technical_plan:
         existing vintage directory, an archive with no or several .shp files, a shapefile that
         lacks one of the five fields (naming it), a province without a row, and a section code
         that occurs twice. No code touches the network.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.75
       depends_on: ["1.2"]
