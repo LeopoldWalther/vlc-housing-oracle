@@ -106,7 +106,7 @@ technical_plan:
         library in Python; point-in-polygon in plain SQL). CLAUDE.md: the Target Architecture
         section names the reference layer in one short entry. If the licence does not allow the
         use, stop, leave the task in progress and report to the user.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: []
