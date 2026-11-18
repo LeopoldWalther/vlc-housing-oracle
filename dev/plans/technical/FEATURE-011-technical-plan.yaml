@@ -270,7 +270,7 @@ technical_plan:
         under names of its own, runs the statement and unregisters them, so it replaces no
         silver_<table>. The statement gives the table of the conventions. Do not write the table
         in a run yet.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.3"]
