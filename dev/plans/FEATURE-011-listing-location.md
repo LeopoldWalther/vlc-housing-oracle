@@ -1,7 +1,7 @@
 # FEATURE-011 — Listing location from coordinates: municipality, district and census section
 
-**Status:** 🟡 In progress · **Effort:** M (~11h) · **Priority:** Medium
-**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-18
+**Status:** 🟢 Complete · **Effort:** M (~11h) · **Priority:** Medium
+**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-19
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-011.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-011-technical-plan.yaml`.
@@ -153,7 +153,7 @@ population, reference rents) are published.
     argument from a variable; `terraform validate` and a plan that changes only the task role
     policy and the task definition.
 - [x] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.
-- [ ] **3.4 First vintage and first run (operator, with approval).** Convert and upload the 2026
+- [x] **3.4 First vintage and first run (operator, with approval).** Convert and upload the 2026
     edition, deploy, then counts only: listings with a section, listings whose portal
     municipality differs from the polygon's, sections and districts in use. Recorded in
     `dev/plans/implementations/FEATURE-011-listing-location.md`.
@@ -210,15 +210,15 @@ population, reference rents) are published.
 
 ## Success criteria
 
-- [ ] ADR 0004 is accepted and names the licence.
-- [ ] Every listing with a detail record has one row; a listing with coordinates inside the
+- [x] ADR 0004 is accepted and names the licence.
+- [x] Every listing with a detail record has one row; a listing with coordinates inside the
     province has its three codes.
-- [ ] A run without the argument behaves as today.
-- [ ] Any sequence of commits and a backfill give the same rows for one vintage.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak, infrastructure and workflow checks pass
-- [ ] The yearly procedure and the table are documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] A run without the argument behaves as today.
+- [x] Any sequence of commits and a backfill give the same rows for one vintage.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak, infrastructure and workflow checks pass
+- [x] The yearly procedure and the table are documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -247,3 +247,9 @@ population, reference rents) are published.
     of 23,000 random points with that vintage took 0.2 s. The image was built for ARM64 and
     loads the spatial extension without network. Task 3.4 (upload, deployment, first run)
     waits for the final PR and for approval.
+- **2026-11-19** — Task 3.4: the 2026 vintage (1,841 sections) was uploaded and the image of
+    merge commit `09be771` deployed. The acquisition side's gate rests until 2026-11-22, so the
+    first run was a manual backfill with the user's approval, not the next commit as planned.
+    It wrote `listing_location` with 23,159 rows, 22,961 of them with a section; every count
+    equals the review's. See the
+    [implementation note](implementations/FEATURE-011-listing-location.md). Feature complete.
