@@ -524,7 +524,7 @@ technical_plan:
         6. Write dev/plans/implementations/FEATURE-011-listing-location.md with the counts, the
            vintage, the manifest's hash and the durations; set the feature plan to complete,
            tick its success criteria, add the progress-log entry and update the registry row.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["3.3"]
