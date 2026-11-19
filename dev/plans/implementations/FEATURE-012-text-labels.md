@@ -155,3 +155,89 @@ Where the model and the evaluation labels differ on `renovation_state` (48 texts
 
 The decision is the user's: which model, and whether `renovated` is dropped, or kept with a
 sharper prompt under a new label version and a new run.
+
+## Second paid evaluation: prompt `tl2` (2026-11-19)
+
+The user chose the sharper prompt and a new run. `tl2` changes two things in the prompt and
+nothing in the definitions: `renovated` needs a renovation of the home itself, and a home of
+which only parts were renewed (a kitchen, bathrooms, a living room, a renovation the text calls
+partial) is `original`. The prompt was changed after the kind of the five errors of `tl1` was
+known, and it is measured on the same 200 texts, so its result is, if anything, optimistic.
+
+Same model (Claude Haiku 4.5, global profile), same command, one run:
+
+```
+texts: 200
+invalid answers: 0
+input tokens: 355189
+output tokens: 10945
+seconds per text: 0.80
+renovation_state agreement: 0.77
+renovated: labelled 35, model 35, both 32, precision 0.91, recall 0.91, weighted precision 0.86, weighted recall 0.93
+needs_renovation: labelled 48, model 37, both 37, precision 1.00, recall 0.77, weighted precision 1.00, weighted recall 0.85
+is_auction: labelled 37, model 37, both 37, precision 1.00, recall 1.00, weighted precision 1.00, weighted recall 1.00
+```
+
+The run cost about $0.41, and the repeated requests below about $0.05.
+
+### Gate
+
+| Value | Weighted precision ≥ 0.90 | Weighted recall ≥ 0.80 | `tl1` | Result |
+|---|---|---|---|---|
+| `renovated` | 0.86 | 0.93 | 0.88 / 0.96 | fails on precision |
+| `needs_renovation` | 1.00 | 0.85 | 1.00 / 0.86 | passes |
+| `is_auction` | 1.00 | 1.00 | 1.00 / 1.00 | passes |
+
+`renovated` still fails, although the unweighted precision rose from 0.87 to 0.91.
+
+### What changed between the two prompts
+
+Eleven texts got another `renovation_state`:
+
+| `tl1` | `tl2` | Texts |
+|---|---|---|
+| `renovated` | `original` | 5 |
+| `original` | `unknown` | 2 |
+| `needs_renovation` | `original` | 2 |
+| `new_build` | `renovated` | 2 |
+
+- Three of the five false positives of `tl1` are gone, two remain (a renewed kitchen; a kitchen
+  and bathrooms), and one is new: a home the text calls nearly new, which `tl1` read as
+  `new_build` and the evaluation label reads as `original`.
+- Two texts labelled `renovated` are now read as `original`: `tl2` is stricter than the labels
+  on a home called renovated without detail and on a home of which one floor is renovated.
+
+Where the model and the evaluation labels differ under `tl2` (46 texts):
+
+| Evaluation label | Model | Texts |
+|---|---|---|
+| `unknown` | `original` | 27 |
+| `needs_renovation` | `original` | 11 |
+| `renovated` | `original` | 3 |
+| `original` | `renovated` | 3 |
+| `unknown` | `new_build` | 2 |
+
+### Why the gate's value moved the wrong way: two findings about the measurement
+
+1. **One text decides.** The three false positives lie in stratum D (two) and stratum F (one).
+   A sampled text of stratum F stands for 261 distinct texts, one of stratum D for 91. Without
+   the single text of stratum F the weighted precision of `renovated` would be 0.94; with it,
+   0.86. The sample of 35 texts in the largest stratum is too small to place this value on
+   either side of 0.90.
+2. **The model's answers are not stable.** The labeller sets no sampling parameter, so the
+   model answers with its default temperature. Five texts at the border of `renovated` were
+   sent five more times each with `tl2`: three got the same answer every time, two changed
+   between runs (three against two, and four against one). One of the two is the text of
+   stratum F; one of the three stable texts was answered differently in the evaluation run
+   itself. A single run therefore measures `renovated` with a spread of several points, and
+   0.88 for `tl1` and 0.86 for `tl2` cannot be told apart.
+
+### Reading
+
+- `is_auction` and `needs_renovation` pass under both prompts.
+- For `renovated` neither prompt is shown to pass or to fail. A third prompt would be measured
+  with the same spread; the measurement has to become stable first: a fixed temperature where
+  the model accepts one, or the majority of several answers, and more texts of stratum F if the
+  value is still near the threshold.
+- The model is open as well (the user's decision of 2026-11-19: wait). Another model is a new
+  `LABEL_VERSION` and a new run in any case, so the decision on `renovated` waits for it.

@@ -6,7 +6,7 @@ a new version, never an edit of this one.
 
 from src.enrichment.labeler import RENOVATION_STATES
 
-LABEL_VERSION = "tl1"
+LABEL_VERSION = "tl2"
 
 ANSWER_TOOL_NAME = "record_text_label"
 
@@ -39,13 +39,18 @@ the first that applies wins:
 1. needs_renovation: it needs works or is sold to be renovated ("para reformar", "a reformar", \
 "necesita reforma", "para actualizar");
 2. new_build: new construction, never lived in;
-3. renovated: renovated as a whole, or recently ("reformado", "reforma integral", \
-"recién reformado", "a estrenar tras reforma");
-4. original: habitable as it is, with no whole renovation stated; a renewed kitchen or bathroom \
-alone, "buen estado" and "para entrar a vivir" belong here;
+3. renovated: the home as a whole was renovated, whenever that was ("reformado", \
+"reforma integral", "totalmente reformado", "recién reformado", "a estrenar tras reforma");
+4. original: habitable as it is, with no whole renovation stated; "buen estado" and \
+"para entrar a vivir" belong here, and so does a home of which only parts were renewed;
 5. unknown: the description says nothing about the state.
 needs_renovation applies only when the description states a need for works or sells the home to \
 be renovated. A habitable home for which updating is offered as an option is original.
+renovated needs a renovation of the home itself. When the description says the renovation was \
+partial ("parcialmente reformado"), or calls only some rooms or elements renewed ("cocina \
+reformada", "baños reformados", a renewed living room, new windows or floors), the home is \
+original, however complete or recent those works are. A description that calls the home \
+renovated and then lists what was renewed is renovated.
 
 is_auction is true when the home is acquired through an auction or the assignment of an auction \
 award ("subasta", "puja", "cesión de remate"), and false otherwise, also when the text says it is \

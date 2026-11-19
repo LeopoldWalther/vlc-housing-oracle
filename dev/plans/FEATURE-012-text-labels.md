@@ -307,3 +307,12 @@ Anthropic's list prices of November 2026 as a stand-in for Bedrock's, which task
 - **2026-11-16** — Task 1.2: the evaluation set is drawn and labelled. The user handed the
     labelling to the assistant; 45 of the 200 texts are marked as borderline. Counts are in
     `dev/plans/implementations/FEATURE-012-text-labels.md`.
+- **2026-11-16** — Task 1.6, first run: Claude Haiku 5.5 is not available to the account, so
+    Claude Haiku 4.5 was evaluated with prompt `tl1`. `is_auction` and `needs_renovation` pass
+    the gate; `renovated` fails on weighted precision (0.88).
+- **2026-11-19** — Task 1.6, second run: the user chose a sharper prompt over dropping the
+    label. Prompt `tl2` (a change of `src/enrichment/prompt.py`, which task 1.6 describes as a
+    new `LABEL_VERSION` and a new run) reaches 0.86: three errors gone, one new one in the
+    largest stratum, where one text decides the value, and the model's answers change between
+    runs. The decision on `renovated` waits for the model decision, which the user postponed;
+    the measurement has to become stable first. The gate stays open.

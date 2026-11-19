@@ -65,8 +65,13 @@ class PromptTest(unittest.TestCase):
             with self.subTest(keyword=keyword):
                 self.assertIn(keyword, SYSTEM_PROMPT)
 
-    def test_the_label_version_is_tl1(self) -> None:
-        self.assertEqual(LABEL_VERSION, "tl1")
+    def test_the_prompt_tells_a_partial_renovation_from_a_whole_one(self) -> None:
+        for wording in ("parcialmente reformado", "cocina reformada", "baños reformados"):
+            with self.subTest(wording=wording):
+                self.assertIn(wording, SYSTEM_PROMPT)
+
+    def test_the_label_version_is_tl2(self) -> None:
+        self.assertEqual(LABEL_VERSION, "tl2")
 
 
 if __name__ == "__main__":
