@@ -540,11 +540,15 @@ SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$N \
 aws ecs run-task --cluster $N --task-definition $N --launch-type FARGATE \
     --started-by manual-backfill \
     --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
-    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics"]}]}'
+    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics","--census-sections","s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>"]}]}'
 
 # when the task stopped with exit code 0:
 aws lambda update-event-source-mapping --uuid "$UUID" --enabled
 ```
+
+The override replaces the task definition's whole command, so it names every argument the
+scheduled runs get. Leave the last two out only while `census_sections` is not set: a backfill
+without them rewrites every other table and leaves `listing_location` as it was.
 
 Messages queued meanwhile stay in the queue and run once the mapping is enabled again.
 
