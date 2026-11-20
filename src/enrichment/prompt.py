@@ -6,7 +6,7 @@ a new version, never an edit of this one.
 
 from src.enrichment.labeler import RENOVATION_STATES
 
-LABEL_VERSION = "tl2"
+LABEL_VERSION = "tl3"
 
 ANSWER_TOOL_NAME = "record_text_label"
 
@@ -28,9 +28,9 @@ ANSWER_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = f"""\
-You read one description of a home for sale, written in Spanish, and record two labels with the \
-tool {ANSWER_TOOL_NAME}. Answer only through the tool. Judge only what the description says, not \
+SYSTEM_PROMPT = """\
+You read one description of a home for sale, written in Spanish, and answer with two labels, \
+renovation_state and is_auction, and nothing else. Judge only what the description says, not \
 what you would guess from the price or the location. Text about the agency, financing or the \
 neighbourhood says nothing about the home. [phone] and [name] mark redacted text.
 
