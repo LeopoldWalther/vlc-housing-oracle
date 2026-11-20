@@ -507,7 +507,7 @@ technical_plan:
         ClaudeApiTextLabeler from anthropic.Anthropic(max_retries=5), which reads the key from
         the environment. The help text of --model-id names both kinds of id. The report and
         the results file are unchanged.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["1.7"]
