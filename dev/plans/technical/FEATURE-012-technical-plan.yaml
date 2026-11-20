@@ -576,7 +576,7 @@ technical_plan:
         client.messages.batches.results and turns a succeeded entry's message into a
         LabelResult with label_result of task 1.7. Results arrive in any order and are keyed by
         custom_id only.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.7"]

@@ -2,10 +2,13 @@
 
 import json
 import unittest
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from src.enrichment.batches import BatchAnswer, BatchState
 from src.enrichment.claude_api import (
     MAX_OUTPUT_TOKENS,
+    ClaudeApiBatches,
     ClaudeApiTextLabeler,
     label_result,
     message_request,
@@ -94,6 +97,112 @@ class ClaudeApiTextLabelerTest(unittest.TestCase):
 
         self.assertEqual(messages.calls, [message_request("model-x", "Piso reformado.")])
         self.assertEqual(result.label, TextLabel("renovated", False))
+
+
+class FakeBatches:
+    def __init__(self, batch: SimpleNamespace | None = None, entries=()) -> None:
+        self.batch = batch
+        self.entries = list(entries)
+        self.created: list[list[dict]] = []
+        self.asked: list[tuple[str, str]] = []
+
+    def create(self, *, requests: list[dict]) -> SimpleNamespace:
+        self.created.append(requests)
+        return SimpleNamespace(id="batch-1")
+
+    def retrieve(self, batch_id: str) -> SimpleNamespace:
+        self.asked.append(("retrieve", batch_id))
+        return self.batch
+
+    def results(self, batch_id: str):
+        self.asked.append(("results", batch_id))
+        return iter(self.entries)
+
+
+def batches_client(fake: FakeBatches) -> SimpleNamespace:
+    return SimpleNamespace(messages=SimpleNamespace(batches=fake))
+
+
+def entry(custom_id: str, kind: str, response: SimpleNamespace | None = None) -> SimpleNamespace:
+    return SimpleNamespace(custom_id=custom_id, result=SimpleNamespace(type=kind, message=response))
+
+
+class ClaudeApiBatchesTest(unittest.TestCase):
+    def test_submit_sends_one_request_per_text_keyed_by_its_hash(self) -> None:
+        fake = FakeBatches()
+        batches = ClaudeApiBatches(batches_client(fake), "model-x")
+
+        batch_id = batches.submit([("a" * 64, "Piso uno."), ("b" * 64, "Piso dos.")])
+
+        self.assertEqual(batch_id, "batch-1")
+        self.assertEqual(
+            fake.created,
+            [
+                [
+                    {"custom_id": "a" * 64, "params": message_request("model-x", "Piso uno.")},
+                    {"custom_id": "b" * 64, "params": message_request("model-x", "Piso dos.")},
+                ]
+            ],
+        )
+
+    def test_submit_of_no_text_is_refused_without_a_call(self) -> None:
+        fake = FakeBatches()
+
+        with self.assertRaises(ValueError):
+            ClaudeApiBatches(batches_client(fake), "model-x").submit([])
+        self.assertEqual(fake.created, [])
+
+    def test_the_state_of_a_batch(self) -> None:
+        ended = datetime(2026, 11, 21, 3, 4, 5, tzinfo=UTC)
+        cases = {
+            "in progress": (
+                SimpleNamespace(processing_status="in_progress", ended_at=None, results_url=None),
+                BatchState(ended=False, ended_at=None, readable=False),
+            ),
+            "ended": (
+                SimpleNamespace(processing_status="ended", ended_at=ended, results_url="https://r"),
+                BatchState(ended=True, ended_at=ended, readable=True),
+            ),
+            "ended, results gone": (
+                SimpleNamespace(processing_status="ended", ended_at=ended, results_url=None),
+                BatchState(ended=True, ended_at=ended, readable=False),
+            ),
+        }
+        for case, (batch, expected) in cases.items():
+            with self.subTest(case=case):
+                fake = FakeBatches(batch)
+                state = ClaudeApiBatches(batches_client(fake), "model-x").state("batch-7")
+
+                self.assertEqual(state, expected)
+                self.assertEqual(fake.asked, [("retrieve", "batch-7")])
+
+    def test_the_answers_of_a_batch_by_hash(self) -> None:
+        entries = [
+            entry("c" * 64, "errored"),
+            entry("a" * 64, "succeeded", message(thinking(), text(json.dumps(VALID)))),
+            entry("b" * 64, "succeeded", message(text("{}"), stop_reason="refusal")),
+            entry("d" * 64, "expired"),
+            entry("e" * 64, "canceled"),
+            entry("f" * 64, "succeeded", message(text(json.dumps({"is_auction": True})))),
+        ]
+        fake = FakeBatches(entries=entries)
+
+        answers = list(ClaudeApiBatches(batches_client(fake), "model-x").answers("batch-7"))
+
+        self.assertEqual(
+            answers,
+            [
+                BatchAnswer("c" * 64, "errored", None),
+                BatchAnswer(
+                    "a" * 64, "succeeded", LabelResult(TextLabel("renovated", False), 1200, 340)
+                ),
+                BatchAnswer("b" * 64, "succeeded", LabelResult(None, 1200, 340)),
+                BatchAnswer("d" * 64, "expired", None),
+                BatchAnswer("e" * 64, "canceled", None),
+                BatchAnswer("f" * 64, "succeeded", LabelResult(None, 1200, 340)),
+            ],
+        )
+        self.assertEqual(fake.asked, [("results", "batch-7")])
 
 
 if __name__ == "__main__":

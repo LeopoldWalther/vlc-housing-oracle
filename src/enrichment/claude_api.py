@@ -1,11 +1,14 @@
-"""The text labeller on the Claude API: one request per description, answered as a structured output.
+"""The text labeller on the Claude API: one request per description, answered as a structured output,
+sent directly for the evaluation or inside a message batch for the labeller.
 
 This is the only module that knows the ``anthropic`` SDK. The client reads its key from the
 environment variable ``ANTHROPIC_API_KEY``; no key is ever an argument here.
 """
 
 import json
+from collections.abc import Iterator, Sequence
 
+from src.enrichment.batches import BatchAnswer, BatchState
 from src.enrichment.labeler import LabelResult, label_from_answer
 from src.enrichment.prompt import ANSWER_SCHEMA, SYSTEM_PROMPT
 
@@ -53,3 +56,35 @@ class ClaudeApiTextLabeler:
         return label_result(
             self._client.messages.create(**message_request(self._model_id, description))
         )
+
+
+class ClaudeApiBatches:
+    """``TextLabelBatches`` on the Message Batches API, with the request of ``message_request``."""
+
+    def __init__(self, client, model_id: str) -> None:
+        self._batches = client.messages.batches
+        self._model_id = model_id
+
+    def submit(self, texts: Sequence[tuple[str, str]]) -> str:
+        if not texts:
+            raise ValueError("a batch needs at least one text")
+        requests = [
+            {"custom_id": text_sha256, "params": message_request(self._model_id, description)}
+            for text_sha256, description in texts
+        ]
+        return self._batches.create(requests=requests).id
+
+    def state(self, batch_id: str) -> BatchState:
+        batch = self._batches.retrieve(batch_id)
+        ended = batch.processing_status == "ended"
+        return BatchState(
+            ended=ended,
+            ended_at=batch.ended_at,
+            readable=ended and batch.results_url is not None,
+        )
+
+    def answers(self, batch_id: str) -> Iterator[BatchAnswer]:
+        for response in self._batches.results(batch_id):
+            outcome = response.result.type
+            result = label_result(response.result.message) if outcome == "succeeded" else None
+            yield BatchAnswer(response.custom_id, outcome, result)
