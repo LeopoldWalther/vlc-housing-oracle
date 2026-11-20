@@ -439,7 +439,7 @@ technical_plan:
         The Bedrock request keeps its forced tool and needs no change.
         requirements.txt pins anthropic exactly to the newest release at the time of the task;
         the commit message body names the version.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.3"]

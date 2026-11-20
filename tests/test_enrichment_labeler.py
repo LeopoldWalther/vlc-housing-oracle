@@ -56,11 +56,13 @@ class PromptTest(unittest.TestCase):
         )
         self.assertEqual(ANSWER_SCHEMA["properties"]["is_auction"]["type"], "boolean")
 
-    def test_the_prompt_names_every_state_and_the_tool(self) -> None:
+    def test_the_prompt_names_every_state_and_no_tool(self) -> None:
+        # The Claude API request answers as a structured output, not through a tool (review R1).
         for state in RENOVATION_STATES:
             with self.subTest(state=state):
                 self.assertIn(state, SYSTEM_PROMPT)
-        self.assertIn(ANSWER_TOOL_NAME, SYSTEM_PROMPT)
+        self.assertNotIn(ANSWER_TOOL_NAME, SYSTEM_PROMPT)
+        self.assertNotIn("tool", SYSTEM_PROMPT)
         for keyword in ("subasta", "puja", "cesión de remate", "para reformar", "buen estado"):
             with self.subTest(keyword=keyword):
                 self.assertIn(keyword, SYSTEM_PROMPT)
@@ -70,8 +72,8 @@ class PromptTest(unittest.TestCase):
             with self.subTest(wording=wording):
                 self.assertIn(wording, SYSTEM_PROMPT)
 
-    def test_the_label_version_is_tl2(self) -> None:
-        self.assertEqual(LABEL_VERSION, "tl2")
+    def test_the_label_version_is_tl3(self) -> None:
+        self.assertEqual(LABEL_VERSION, "tl3")
 
 
 if __name__ == "__main__":

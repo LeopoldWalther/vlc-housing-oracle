@@ -1,6 +1,6 @@
 """The domain of a text label: its values, its validation and the labeller protocol.
 
-Nothing here knows a model service; ``bedrock.py`` implements the protocol.
+Nothing here knows a model service; ``bedrock.py`` and ``claude_api.py`` implement the protocol.
 """
 
 from collections.abc import Mapping
