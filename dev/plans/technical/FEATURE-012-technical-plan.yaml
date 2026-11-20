@@ -1,19 +1,21 @@
 # Technical plan for FEATURE-012 — Labels read from the description by a language model.
-# Emitted by the reviewer with the approval of 2026-11-16. It carries corrections M1 to M6,
-# folded into the feature plan. Task statuses here are the source of truth for progress.
-# Phases 1 and 2 create new files only. Phase 3 starts after FEATURE-009, FEATURE-010 and
-# FEATURE-011 are merged to main.
+# Emitted by the reviewer with the approval of 2026-11-16 (corrections M1 to M6) and updated with
+# the approval of the amendment of 2026-11-20 (corrections R1 to R7): the model is reached through
+# the Claude API, and the labeller submits a message batch in one run and collects it in a later
+# one. Task statuses here are the source of truth for progress.
+# Tasks 1.1 to 1.5 are done and unchanged. Phase 3 starts after main is merged into the
+# integration branch.
 
 technical_plan:
   metadata:
     for_feature: "FEATURE-012"
     created_by: "reviewer_agent"
-    created_at: "2026-11-16"
-    version: "1.0"
-    total_tasks: 14
-    estimated_hours: "20"
+    created_at: "2026-11-20"
+    version: "2.0"
+    total_tasks: 17
+    estimated_hours: "26"
     risk_level: "medium"
-    critical_path: ["1.1", "1.3", "1.4", "1.5", "1.6", "2.1", "2.2", "2.3", "3.1", "3.2", "4.1", "4.2", "4.3"]
+    critical_path: ["1.1", "1.3", "1.7", "1.8", "1.9", "1.6", "2.1", "2.2", "2.3", "3.1", "3.2", "4.1", "4.2", "4.3"]
     feature_plan: "dev/plans/FEATURE-012-text-labels.md"
     reviewed_plan: "dev/reviews/REVIEW-FEATURE-012.md"
 
@@ -58,9 +60,22 @@ technical_plan:
                                                 None unless answer is a mapping with exactly
                                                 the keys renovation_state (one of the five
                                                 values) and is_auction (a bool, not 0 or 1)
-    - src/enrichment/prompt.py holds LABEL_VERSION = "tl1", SYSTEM_PROMPT, ANSWER_TOOL_NAME and
+    - src/enrichment/prompt.py holds LABEL_VERSION, SYSTEM_PROMPT, ANSWER_TOOL_NAME and
       ANSWER_SCHEMA (the JSON schema of the answer). LABEL_VERSION names the prompt, the schema
-      and the model: a change of any of the three is a new value, never an edit.
+      and the model: a change of any of the three is a new value, never an edit. It is "tl2"
+      today and becomes "tl3" in task 1.7, whose prompt names no tool (review R1); ANSWER_TOOL_NAME
+      is used by the Bedrock request only.
+    - src/enrichment/claude_api.py is the only module that imports the anthropic SDK. One
+      function, message_request(model_id, description), builds the request that the evaluation
+      sends directly and the labeller sends inside a batch. It sets model, max_tokens =
+      MAX_OUTPUT_TOKENS = 4096 (the model's thinking counts toward it), system = SYSTEM_PROMPT,
+      one user message holding the description, and output_config.format = {type: json_schema,
+      schema: ANSWER_SCHEMA}. It sets no temperature, top_p, top_k, thinking, effort, tools or
+      tool_choice. The SDK reads the key from the environment variable ANTHROPIC_API_KEY; the
+      key is never an argument, a default, a fixture or a log line.
+    - Every SDK name used in src/enrichment/claude_api.py (the request fields, the batch
+      object's status, end time and results location, the result entries) is taken from the
+      pinned SDK's own types or from the claude-api skill's Python files, never from memory.
     - A stored answer has these columns, in order, with Arrow types (ANSWER_SCHEMA_ARROW in
       src/enrichment/text_labels.py):
         text_sha256        string
@@ -71,11 +86,26 @@ technical_plan:
         labeled_at         timestamp(us, UTC)
         input_tokens       int32
         output_tokens      int32
-    - Stored answers live under <labels>/label_version=<v>/run=<run_id>/part-<n>.parquet, where
-      <labels> is a directory or an s3:// location, run_id is the run's UTC start as
-      YYYYMMDDTHHMMSSZ and n counts from 0. A part holds at most PART_ROWS = 200 answers, is
-      written once and never replaced. The partition values are also columns of the file; a
-      reader does not rely on hive partitioning.
+    - Stored answers live under <labels>/label_version=<v>/run=<batch_id>/part-0.parquet, where
+      <labels> is a directory or an s3:// location: one part per collected batch, holding the
+      batch's valid answers ordered by text_sha256, with the batch's end as labeled_at. It is
+      written once, also with no row, and never replaced; collecting a batch twice gives the
+      same file. The partition values are also columns of the file; a reader does not rely on
+      hive partitioning.
+    - A submitted batch has a record under
+      <batches>/label_version=<v>/batch=<batch_id>/record.parquet with these columns, in order
+      (BATCH_RECORD_SCHEMA_ARROW in src/enrichment/text_labels.py), ordered by text_sha256:
+        text_sha256        string
+        label_version      string
+        model_id           string
+        batch_id           string
+        submitted_at       timestamp(us, UTC)
+      <batches> is a sibling of <labels>, never below it, so Silver's read of the answers does
+      not meet a record. A batch is open when its record exists and its part does not. The
+      record and the part are the whole state: there is no table of batches, no cursor and no
+      listing of the provider's batches.
+    - A text is pending when it is a non-empty description of a sale listing, has no stored
+      answer under LABEL_VERSION and is in no open batch of LABEL_VERSION.
     - The private evaluation set is a CSV file outside the repository with the columns number,
       stratum, stratum_population, description, renovation_state, is_auction (true or false).
       It is passed by path and never copied into the repository, a fixture or a log.
@@ -94,10 +124,13 @@ technical_plan:
       labeled_at wins; answers of another label_version are ignored.
     - TEXT_LABEL_TABLE = "listing_text_label" is a constant of src/silver/rebuild.py and is not
       a member of SILVER_TABLES: it exists only for a run given --text-labels.
-    - No text, no hash and no listing identifier is printed or logged by any command; reports
-      are counts.
+    - No text, no hash, no listing identifier and no key is printed or logged by any command;
+      reports are counts.
     - No test calls a model or a cloud service. The Bedrock labeller is tested with
-      botocore.stub.Stubber on a client built with dummy credentials and a fixed region.
+      botocore.stub.Stubber on a client built with dummy credentials and a fixed region. The
+      Claude API classes are tested with a fake client object that records the keyword
+      arguments of each call and returns prepared objects; no test builds an HTTP request or
+      reads ANTHROPIC_API_KEY.
     - TRANSFORMATION_VERSION stays "silver-v1". No existing table, column or test expectation
       about other tables changes.
     - Tests use synthetic values only (source "syn", invented texts) and compare results as
@@ -386,33 +419,250 @@ technical_plan:
         - "tests/test_enrichment_evaluate.py"
       files_to_modify: []
 
+    - id: "1.7"
+      title: "The Claude API labeller and prompt tl3"
+      description: |
+        src/enrichment/claude_api.py with MAX_OUTPUT_TOKENS, message_request of the
+        conventions, label_result(message) -> LabelResult and ClaudeApiTextLabeler(client,
+        model_id), which implements TextLabeler with one client.messages.create call per
+        description. label_result takes the tokens from the message's usage and gives a label
+        only when the message's stop_reason is "end_turn" and it holds exactly one text block
+        whose text is JSON that label_from_answer accepts; blocks are chosen by type, never by
+        position, because a response may begin with thinking blocks. Every other response (a
+        refusal, the output limit, no text block, two text blocks, text that is not JSON, an
+        answer outside the schema) gives a None label with the tokens. An SDK error propagates;
+        the client's own bounded retries cover throttling and server errors.
+        src/enrichment/prompt.py (review R1): the sentence of SYSTEM_PROMPT that reads
+        "... and record two labels with the tool {ANSWER_TOOL_NAME}. Answer only through the
+        tool." becomes "... and answer with two labels, renovation_state and is_auction, and
+        nothing else."; no other word of the prompt changes, and LABEL_VERSION becomes "tl3".
+        The Bedrock request keeps its forced tool and needs no change.
+        requirements.txt pins anthropic exactly to the newest release at the time of the task;
+        the commit message body names the version.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.3"]
+      branch: "feature/text-labels/1.7-claude-api-labeller"
+      commit_message: "feat(enrichment): Claude API text labeller with a structured answer, prompt tl3"
+      acceptance_criteria:
+        - "message_request carries the model id, max_tokens 4096, SYSTEM_PROMPT as system, one user message holding the description and output_config.format with type json_schema and ANSWER_SCHEMA"
+        - "message_request has none of the keys temperature, top_p, top_k, thinking, tools and tool_choice, and its output_config has no key but format"
+        - "A message with a thinking block before a text block holding a valid answer becomes a LabelResult with the label and the usage's token counts"
+        - "A message whose stop_reason is refusal or max_tokens, one without a text block, one with two text blocks, one whose text is not JSON and one whose answer is outside the schema give a None label with the token counts"
+        - "ClaudeApiTextLabeler passes exactly message_request's keywords to client.messages.create"
+        - "SYSTEM_PROMPT contains neither ANSWER_TOOL_NAME nor the word tool, still names every value of RENOVATION_STATES and every keyword the tests list, and LABEL_VERSION is 'tl3'"
+        - "The Bedrock tests pass unchanged; no test opens a network connection or reads ANTHROPIC_API_KEY"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_claude_api.py"
+          change: |
+            New file with a fake client whose messages.create records its keyword arguments and
+            returns a prepared message (objects with type, text, stop_reason and usage). In
+            tests/test_enrichment_labeler.py the version test expects "tl3" and the prompt test
+            expects no tool name.
+          command: "python -m unittest tests.test_enrichment_claude_api tests.test_enrichment_labeler -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.claude_api'"
+        green:
+          change: "The module, the reworded sentence, the version and the pin."
+          command: "python -m unittest tests.test_enrichment_claude_api tests.test_enrichment_labeler tests.test_enrichment_bedrock -v"
+        refactor:
+          change: "The module docstrings of labeler.py and claude_api.py name both implementations; no behavior change."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/claude_api.py"
+        - "src/enrichment/prompt.py"
+        - "src/enrichment/labeler.py"
+        - "tests/test_enrichment_claude_api.py"
+        - "tests/test_enrichment_labeler.py"
+        - "requirements.txt"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "src/enrichment/bedrock.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/claude_api.py"
+        - "tests/test_enrichment_claude_api.py"
+      files_to_modify:
+        - "src/enrichment/prompt.py"
+        - "src/enrichment/labeler.py"
+        - "tests/test_enrichment_labeler.py"
+        - "requirements.txt"
+
+    - id: "1.8"
+      title: "The evaluation command takes a provider"
+      description: |
+        src/enrichment/evaluate.py: the command gains the required argument --provider with the
+        choices bedrock and claude-api. Without an injected labeller it builds, for bedrock,
+        BedrockTextLabeler from a boto3 bedrock-runtime client as today, and for claude-api,
+        ClaudeApiTextLabeler from anthropic.Anthropic(max_retries=5), which reads the key from
+        the environment. The help text of --model-id names both kinds of id. The report and
+        the results file are unchanged.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["1.7"]
+      branch: "feature/text-labels/1.8-evaluation-provider"
+      commit_message: "feat(enrichment): the evaluation command takes the provider"
+      acceptance_criteria:
+        - "The command without --provider and with an unknown provider exits 2 before the evaluation set is read"
+        - "With an injected labeller and either provider the report equals today's, line for line"
+        - "Every existing test of the command passes with the argument added and no assertion weakened"
+        - "No test builds a real client"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_evaluate.py"
+          change: "Add the two usage cases and pass --provider in the existing calls."
+          command: "python -m unittest tests.test_enrichment_evaluate -v"
+          expected_failure: "error: unrecognized arguments: --provider (SystemExit 2 in the existing calls)"
+        green:
+          change: "The argument and the choice of the labeller."
+          command: "python -m unittest tests.test_enrichment_evaluate -v"
+        refactor:
+          change: "None expected."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/evaluate.py"
+        - "tests/test_enrichment_evaluate.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+      can_run_parallel_with: ["1.9"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/enrichment/evaluate.py"
+        - "tests/test_enrichment_evaluate.py"
+
+    - id: "1.9"
+      title: "The Claude API batches"
+      description: |
+        src/enrichment/batches.py, which knows no service:
+          BatchState(ended, ended_at, readable)     frozen dataclass; ended_at is a UTC datetime
+                                                    or None; readable is False when the batch
+                                                    has ended and its results can no longer be
+                                                    read
+          BatchAnswer(text_sha256, outcome, result) frozen dataclass; outcome is one of
+                                                    succeeded, errored, expired, canceled;
+                                                    result is a LabelResult for succeeded and
+                                                    None otherwise
+          TextLabelBatches                          Protocol with
+                                                    submit(texts) -> str, where texts is a
+                                                    sequence of (text_sha256, description) and
+                                                    the result is the batch id;
+                                                    state(batch_id) -> BatchState;
+                                                    answers(batch_id) -> Iterator[BatchAnswer]
+        ClaudeApiBatches(client, model_id) in src/enrichment/claude_api.py implements it:
+        submit sends one client.messages.batches.create call whose requests each carry the
+        text's hash as custom_id and message_request(model_id, description) as params, and
+        refuses an empty sequence with ValueError; state reads client.messages.batches.retrieve
+        (ended when processing_status is "ended"); answers iterates
+        client.messages.batches.results and turns a succeeded entry's message into a
+        LabelResult with label_result of task 1.7. Results arrive in any order and are keyed by
+        custom_id only.
+      status: "not_started"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.7"]
+      branch: "feature/text-labels/1.9-claude-api-batches"
+      commit_message: "feat(enrichment): Claude API message batches behind the TextLabelBatches protocol"
+      acceptance_criteria:
+        - "submit sends one create call with one request per text, the hash as custom_id and exactly message_request's params, and returns the batch's id"
+        - "submit of no text raises ValueError and makes no call"
+        - "state of a batch in progress is not ended; state of an ended batch is ended with its end time in UTC; an ended batch without a results location is not readable"
+        - "answers gives a label with its tokens for a succeeded valid answer, a None label with tokens for a succeeded refusal or invalid answer, and no result for errored, expired and canceled entries, each under its custom_id"
+        - "No test opens a network connection"
+      tdd:
+        red:
+          test_file: "tests/test_enrichment_claude_api.py"
+          change: "Add a fake client whose messages.batches has create, retrieve and results, and the cases of the acceptance criteria."
+          command: "python -m unittest tests.test_enrichment_claude_api -v"
+          expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.batches'"
+        green:
+          change: "The protocol module and the class."
+          command: "python -m unittest tests.test_enrichment_claude_api -v"
+        refactor:
+          change: "None expected beyond docstrings."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/enrichment/batches.py"
+        - "src/enrichment/claude_api.py"
+        - "tests/test_enrichment_claude_api.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/silver/**"
+        - "src/synthetic/**"
+        - "src/enrichment/prompt.py"
+      can_run_parallel_with: ["1.8"]
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create:
+        - "src/enrichment/batches.py"
+      files_to_modify:
+        - "src/enrichment/claude_api.py"
+        - "tests/test_enrichment_claude_api.py"
+
     - id: "1.6"
       title: "Paid evaluation and gate (operator, with approval)"
       description: |
-        Needs tasks 1.2 and 1.5 and the user's approval of the paid run and its upper bound.
-        1. Read the current Bedrock price of the model and the id of its inference profile in
-           the account; confirm that model-invocation logging is off.
-        2. Run the evaluation command once against the private evaluation set, with --results
-           into the private directory.
-        3. Record in the implementation note, as counts only: the report's lines, the price, the
-           cost of the run, and the estimated cost of the backlog and of a month from the
-           measured tokens.
+        Two Bedrock runs with Claude Haiku 4.5 are recorded (prompts tl1 and tl2); renovated
+        failed both and the gate is open. The rest of this task runs after tasks 1.7 to 1.9
+        and after the user has linked the API credit (or bought a small amount), created the
+        key and stored it as a Parameter Store SecureString. Every paid step needs the user's
+        approval with its upper bound; reading the parameter is an AWS action and needs it too.
+        The key reaches a command only as ANTHROPIC_API_KEY in that command's environment,
+        read from the Parameter Store in the same shell line, and is never printed or stored.
+        1. Extend the largest stratum (F) by 30 distinct descriptions drawn at random with a
+           recorded seed from the texts not yet in the set, labelled under the definitions
+           before any model reads them, and add them to the private evaluation set with the
+           stratum's population. Record the new counts.
+        2. Send one batch of one text of the evaluation set with ClaudeApiBatches and collect
+           it (review R3). It must end with a valid answer. If the batch call refuses the
+           structured output, the custom_id or the organization's limits, stop and return to
+           the reviewer before phase 2.
+        3. Run the evaluation command three times with --provider claude-api and Claude Haiku
+           5.5, each with --results into the private directory.
         4. Gate: renovated, needs_renovation and is_auction each need a weighted precision of
-           at least 0.90 and a weighted recall of at least 0.80. The user reads the
-           disagreements in the private results file. If a value fails, the user decides between
-           dropping the label and a larger model for it; that decision and a changed prompt are
-           a new LABEL_VERSION and a new run, and a dropped label returns the plan to the
-           reviewer before phase 2.
-        5. Add the progress-log entry to the feature plan.
+           at least 0.90 and a weighted recall of at least 0.80 in every one of the three runs.
+        5. Only if renovated fails: three runs with Claude Sonnet 5.5, the same gate, and the
+           user decides between the larger model and dropping the label. A dropped label
+           returns the plan to the reviewer before phase 2.
+        6. Record in the implementation note, as counts only: the three reports per model, the
+           tokens per text, the cost of the runs, the cost of the backlog and of a month from
+           the measured tokens, the gate's result and the user's decision. The chosen model is
+           the model of LABEL_VERSION tl3; a prompt change after this point is a new version
+           and a new evaluation.
+        7. Add the progress-log entry to the feature plan.
       status: "in_progress"
       complexity: "medium"
-      estimated_hours: 1.0
-      depends_on: ["1.2", "1.5"]
-      branch: "feature/text-labels/1.6-evaluation-record"
-      commit_message: "docs(plans): FEATURE-012 evaluation of the model against hand labels"
+      estimated_hours: 2.0
+      depends_on: ["1.2", "1.5", "1.7", "1.8", "1.9"]
+      branch: "feature/text-labels/1.6-claude-api-evaluation"
+      commit_message: "docs(plans): FEATURE-012 evaluation through the Claude API and the gate"
       acceptance_criteria:
-        - "The implementation note records the measures per decisive value, the tokens, the price and the cost"
-        - "The gate's result and the user's decision are recorded"
+        - "The implementation note records the batch of one text, three reports per evaluated model, the tokens, the cost and the estimates"
+        - "The gate's result per decisive value in every run and the user's decision are recorded"
         - "The note holds counts only; the leak guard and the workflow validator pass"
       tdd: null
       validation_commands:
@@ -438,34 +688,36 @@ technical_plan:
       title: "Pending texts"
       description: |
         src/enrichment/sql/pending_text.sql and pending_texts(connection, listing, listing_text,
-        stored) -> pyarrow.Table in src/enrichment/text_labels.py, with ANSWER_SCHEMA_ARROW.
-        listing needs source, source_listing_id and operation; listing_text needs source,
-        source_listing_id and description; stored needs text_sha256 and label_version. The
-        result has text_sha256 and description, one row per distinct hash of a non-empty
-        description of a sale listing that has no stored answer under LABEL_VERSION, ordered by
-        text_sha256. The function registers its inputs under names of its own and unregisters
-        them; LABEL_VERSION reaches the statement as a DuckDB variable.
+        stored, open_texts) -> pyarrow.Table in src/enrichment/text_labels.py, with
+        ANSWER_SCHEMA_ARROW and BATCH_RECORD_SCHEMA_ARROW. listing needs source,
+        source_listing_id and operation; listing_text needs source, source_listing_id and
+        description; stored needs text_sha256 and label_version; open_texts needs text_sha256
+        and label_version (the rows of the records of open batches). The result has text_sha256
+        and description, one row per pending text of the conventions, ordered by text_sha256.
+        The function registers its inputs under names of its own and unregisters them;
+        LABEL_VERSION reaches the statement as a DuckDB variable.
       status: "not_started"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.6"]
       branch: "feature/text-labels/2.1-pending-texts"
-      commit_message: "feat(enrichment): the sale descriptions that have no stored answer"
+      commit_message: "feat(enrichment): the sale descriptions that have no answer and no open batch"
       acceptance_criteria:
         - "A sale listing's description without an answer is pending; a rent listing's never is"
         - "Two sale listings with one description are one pending row"
         - "A null description and one of white space only are never pending"
         - "An answer under LABEL_VERSION removes the text; one under another version does not"
+        - "A text in an open batch of LABEL_VERSION is not pending; one in an open batch of another version is"
         - "text_sha256 equals hashlib.sha256 of the UTF-8 bytes for a description with non-ASCII characters"
         - "Rows are ordered by text_sha256 and the session keeps no relation of the function"
       tdd:
         red:
           test_file: "tests/test_enrichment_text_labels.py"
-          change: "New file with helpers that build the three Arrow tables and the cases of the acceptance criteria."
+          change: "New file with helpers that build the four Arrow tables and the cases of the acceptance criteria."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
           expected_failure: "ModuleNotFoundError: No module named 'src.enrichment.text_labels'"
         green:
-          change: "The statement and the function."
+          change: "The statement, the function and the two schemas."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
         refactor:
           change: "The statement's header comment states the rule; no behavior change."
@@ -493,39 +745,55 @@ technical_plan:
       files_to_modify: []
 
     - id: "2.2"
-      title: "One run, in memory"
+      title: "Collect and submit, in memory"
       description: |
-        label_texts(pending, labeler, *, model_id, max_texts, write_part, now) -> RunReport in
-        src/enrichment/text_labels.py. It labels the first max_texts rows of pending one after
-        another, collects valid answers as rows of ANSWER_SCHEMA_ARROW with labeled_at from
-        now(), and hands every full part of PART_ROWS rows, and the last partial one, to
-        write_part(n, table). RunReport is a frozen dataclass of counts: pending, labelled,
-        invalid, input_tokens, output_tokens, remaining (pending minus labelled). An invalid
-        answer is counted with its tokens and not stored. An exception of the labeller
-        propagates after the parts already handed over; the rows collected since the last part
-        are written first. check_model(stored, model_id) raises LabelVersionError, naming the
-        version and both model ids, when stored answers of LABEL_VERSION carry another model id.
+        In src/enrichment/text_labels.py, with a fake TextLabelBatches in the tests:
+        - BatchRecord(batch_id, model_id, text_sha256s), a frozen dataclass.
+        - collect_batches(open_batches, batches, *, write_part) -> CollectReport. For each open
+          batch in the order of its id: a batch that has not ended is left alone; an ended
+          batch that is not readable gets write_part(batch_id, <no row>); an ended, readable
+          batch has its answers read, and write_part(batch_id, table) receives one row of
+          ANSWER_SCHEMA_ARROW per succeeded answer with a label, ordered by text_sha256, with
+          LABEL_VERSION, the record's model id and the batch's end as labeled_at, also when no
+          row results. An answer whose text_sha256 is not in the record raises
+          BatchResultError naming the batch id and no hash, before anything of that batch is
+          written. CollectReport is a frozen dataclass of counts: collected, still_open,
+          labelled, invalid (succeeded without a label), errored, expired (expired and
+          canceled), input_tokens, output_tokens and failed_batches (collected batches that
+          held at least one request and no succeeded one; review R4).
+        - submit_pending(pending, batches, *, model_id, max_texts, write_record, now) ->
+          SubmitReport. It submits the first max_texts rows of pending as one batch and then
+          hands write_record(batch_id, table) the record of BATCH_RECORD_SCHEMA_ARROW with
+          submitted_at from now(); with nothing pending it calls neither. SubmitReport is a
+          frozen dataclass of counts: pending, submitted and remaining. An exception of
+          submit propagates and no record is written.
+        - check_model(stored, model_id) raises LabelVersionError, naming the version and both
+          model ids, when stored answers of LABEL_VERSION carry another model id.
+        Neither function waits or sleeps.
       status: "not_started"
       complexity: "medium"
-      estimated_hours: 1.5
-      depends_on: ["2.1"]
-      branch: "feature/text-labels/2.2-one-run"
-      commit_message: "feat(enrichment): label pending texts in parts under a cap"
+      estimated_hours: 2.0
+      depends_on: ["2.1", "1.9"]
+      branch: "feature/text-labels/2.2-collect-and-submit"
+      commit_message: "feat(enrichment): collect ended batches and submit pending texts under a cap"
       acceptance_criteria:
-        - "450 pending texts under a cap of 1,000 give parts of 200, 200 and 50 rows and a report of 450 labelled and 0 remaining"
-        - "A cap of 300 labels the first 300 in the order of pending and reports 150 remaining"
-        - "An invalid answer is counted, its tokens are counted, and its text is in no part"
-        - "A labeller that raises on the 250th text leaves a part of 200 and a part of 49 written, and the error propagates"
-        - "Every stored row carries LABEL_VERSION, the model id and the instant of now()"
+        - "An ended batch of three texts with two valid answers and one invalid gives one part of two rows ordered by text_sha256 and a report of 1 collected, 2 labelled, 1 invalid with the tokens of all three"
+        - "A batch that has not ended gets no part and no answers call and is counted as still open"
+        - "Errored, expired and canceled requests are counted, are in no part, and a batch holding only such requests gets a part without a row and counts as a failed batch"
+        - "An ended batch that is not readable gets a part without a row"
+        - "Every stored row carries LABEL_VERSION, the record's model id and the batch's end, whatever model id the run was started with"
+        - "An answer for a hash outside the record raises BatchResultError and writes nothing of that batch"
+        - "450 pending texts under a cap of 300 submit the first 300 in the order of pending as one batch, write one record of 300 rows and report 150 remaining"
+        - "Nothing pending makes no submit call and writes no record; a submit that raises writes no record"
         - "check_model raises for another model id under the same version and passes for the same id, for another version and for no stored answer"
       tdd:
         red:
           test_file: "tests/test_enrichment_text_labels.py"
-          change: "Add a fake labeller, a recording write_part and the cases of the acceptance criteria."
+          change: "Add fake batches (prepared states and answers, recorded submits), recording write_part and write_record, and the cases of the acceptance criteria."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
-          expected_failure: "ImportError: cannot import name 'label_texts' from 'src.enrichment.text_labels'"
+          expected_failure: "ImportError: cannot import name 'collect_batches' from 'src.enrichment.text_labels'"
         green:
-          change: "The loop, the report and check_model."
+          change: "The two functions, their reports, the record type and check_model."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
         refactor:
           change: "None expected."
@@ -542,6 +810,7 @@ technical_plan:
         - "contracts/**"
         - "src/silver/**"
         - "src/synthetic/**"
+        - "src/enrichment/claude_api.py"
       can_run_parallel_with: []
       reversible: true
       rollback: "Revert the commit"
@@ -551,44 +820,59 @@ technical_plan:
         - "tests/test_enrichment_text_labels.py"
 
     - id: "2.3"
-      title: "The command and the stored parts"
+      title: "The command, the stored parts and the batch records"
       description: |
-        In src/enrichment/text_labels.py: stored_answers(connection, labels) -> pyarrow.Table
-        reads every part under <labels> with the columns of ANSWER_SCHEMA_ARROW and returns an
-        empty table of that schema when no part exists; a part that lacks a column raises
-        StoredAnswerError naming the part's path below <labels> and the column.
-        part_writer(labels, run_id) returns the write_part of the conventions' layout through
-        pyarrow.fs.FileSystem.from_uri, and refuses to replace an existing part. main(argv, *,
-        labeler=None, now=...) is python -m src.enrichment.text_labels --catalog <name> --labels
-        <dir-or-s3> --model-id <id> --max-texts <n>: it reads source, source_listing_id and
-        operation of Silver's listing and source, source_listing_id and description of
-        listing_text through the catalog, runs check_model, pending_texts and label_texts, and
-        prints the report as "pending: <n>", "labelled: <n>", "invalid answers: <n>", "input
-        tokens: <n>", "output tokens: <n>", "remaining: <n>". Exit code 0 on success, 1 for
-        LabelVersionError or StoredAnswerError (message without a value), 2 for usage. For an
-        s3:// location the session reads through httpfs as the Silver command does.
+        In src/enrichment/text_labels.py:
+        - stored_answers(connection, labels) -> pyarrow.Table reads every part under <labels>
+          with the columns of ANSWER_SCHEMA_ARROW and returns an empty table of that schema when
+          no part exists; a part that lacks a column raises StoredAnswerError naming the part's
+          path below <labels> and the column.
+        - open_batches(labels, batches) -> list[BatchRecord] reads the records of LABEL_VERSION
+          under <batches> and leaves out every batch whose part exists under <labels>; the
+          part's existence is read from the file listing, because a part may hold no row.
+        - part_writer(labels) and record_writer(batches) return the write_part and write_record
+          of the conventions' layouts through pyarrow.fs.FileSystem.from_uri; neither replaces
+          an existing file.
+        - main(argv, *, batches=None, now=...) is python -m src.enrichment.text_labels --catalog
+          <name> --labels <dir-or-s3> --batches <dir-or-s3> --model-id <id> --max-texts <n>.
+          Without injected batches it builds ClaudeApiBatches from anthropic.Anthropic() and
+          --model-id, and exits 1 naming the variable when ANTHROPIC_API_KEY is not set. It
+          reads the stored answers and runs check_model, collects the open batches, reads the
+          stored answers and the open batches again, takes the pending texts from Silver's
+          listing and listing_text through the catalog, submits them, and prints, one per line:
+          "batches collected", "batches open", "labelled", "invalid answers", "errored
+          requests", "expired requests", "input tokens", "output tokens", "pending",
+          "submitted" and "remaining", each followed by a colon and its count.
+          Exit code 0 on success; 1 after all of the above when failed_batches is not 0
+          (message "a collected batch had no succeeded request"), and for LabelVersionError,
+          StoredAnswerError, BatchResultError and the missing key (message without a value); 2
+          for usage. For an s3:// location the session reads through httpfs as the Silver
+          command does.
       status: "not_started"
       complexity: "medium"
       estimated_hours: 2.0
       depends_on: ["2.2"]
       branch: "feature/text-labels/2.3-command"
-      commit_message: "feat(enrichment): the text label command and its stored parts"
+      commit_message: "feat(enrichment): the text label command, its stored parts and batch records"
       acceptance_criteria:
-        - "Against a local catalog backfilled from the synthetic landing and an empty directory, a run with a fake labeller stores one answer per distinct non-empty description under the layout of the conventions and prints the six report lines"
-        - "A second run prints pending 0 and labelled 0 and writes no file"
-        - "A run with a cap below the pending count leaves the rest, and the next run labels exactly the rest"
-        - "stored_answers of an empty or missing directory is an empty table with the schema"
-        - "A part without a column exits 1 and names the part and the column"
-        - "Stored answers of another model under LABEL_VERSION exit 1 and nothing is written"
-        - "The output contains no description and no hash"
+        - "Against a local catalog backfilled from the synthetic landing and two empty directories, a first run with fake batches submits one request per distinct non-empty description, writes one record under the layout of the conventions and no part, and prints the eleven report lines"
+        - "A second run while the batch has not ended submits nothing, collects nothing and writes no file"
+        - "A run after the batch ended writes its part under the layout of the conventions and submits nothing; the run after that writes no file"
+        - "A text whose request errored is submitted again by the run that collects its batch"
+        - "A run with a cap below the pending count leaves the rest, and the next run submits exactly the rest"
+        - "A collected batch without a succeeded request makes the run exit 1 after its part is written and its texts are submitted again"
+        - "stored_answers of an empty or missing directory is an empty table with the schema; a part without a column exits 1 and names the part and the column"
+        - "Stored answers of another model under LABEL_VERSION exit 1 and nothing is written or submitted"
+        - "Without injected batches and without ANTHROPIC_API_KEY the command exits 1 and names the variable"
+        - "The output contains no description, no hash and no key"
       tdd:
         red:
           test_file: "tests/test_enrichment_text_labels.py"
-          change: "Add a class that backfills a SQLite catalog from generate_landing_v3 once and runs main with a fake labeller and a fixed clock."
+          change: "Add a class that backfills a SQLite catalog from generate_landing_v3 once and runs main with fake batches and a fixed clock."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
           expected_failure: "ImportError: cannot import name 'main' from 'src.enrichment.text_labels'"
         green:
-          change: "The reader, the writer and the command."
+          change: "The readers, the writers and the command."
           command: "python -m unittest tests.test_enrichment_text_labels -v"
         refactor:
           change: "None expected beyond docstrings."
@@ -616,7 +900,7 @@ technical_plan:
     - id: "3.1"
       title: "The table listing_text_label"
       description: |
-        Starts after FEATURE-009, FEATURE-010 and FEATURE-011 are on main and main is merged
+        Starts after main, which holds FEATURE-009 to FEATURE-011 and FEATURE-013, is merged
         into the integration branch. src/silver/sql/listing_text_label.sql and
         listing_text_labels(connection, listing, listing_text, answers) -> pyarrow.Table in
         src/silver/rebuild.py, with TEXT_LABEL_TABLE, TEXT_LABEL_LISTING_COLUMNS (source,
@@ -693,7 +977,7 @@ technical_plan:
       branch: "feature/text-labels/3.2-pipeline"
       commit_message: "feat(silver): write listing_text_label in a run given --text-labels"
       acceptance_criteria:
-        - "A backfill with text_labels over answers stored by the command with a fake labeller writes the table, and every sale listing with a non-empty description carries a label"
+        - "A backfill with text_labels over answers stored by the command with fake batches writes the table, and every sale listing with a non-empty description carries a label"
         - "Commits processed one at a time with the same stored answers give the rows of that backfill"
         - "A run with text_labels and an empty directory writes the table with null labels"
         - "A run without text_labels writes no such table and every other table as before"
@@ -704,8 +988,8 @@ technical_plan:
           test_file: "tests/test_silver_incremental.py"
           change: |
             tests/test_silver_incremental.py: a class that stores answers once (backfill, then
-            the labeller's main with a fake labeller) and compares a backfill with stepwise runs,
-            both given text_labels. tests/test_silver_cli.py: the report line with and without
+            the labeller's main twice with fake batches: one run submits, the next collects)
+            and compares a backfill with stepwise runs, both given text_labels. tests/test_silver_cli.py: the report line with and without
             the argument.
           command: "python -m unittest tests.test_silver_incremental tests.test_silver_cli -v"
           expected_failure: "TypeError: process_landing() got an unexpected keyword argument 'text_labels'"
@@ -740,42 +1024,52 @@ technical_plan:
         - "tests/test_silver_cli.py"
 
     - id: "4.1"
-      title: "Infrastructure: the labeller task and its start rule"
+      title: "Infrastructure: the labeller task, its key and its start rule"
       description: |
         infra/silver/labels.tf:
         - a task definition for the labeller on the existing cluster and image, ARM64, 0.25 vCPU
           and 1 GB, with entryPoint ["python", "-m", "src.enrichment.text_labels"] and the
           command --catalog silver --labels s3://<lake bucket>/enrichment/v1/text_label
-          --model-id <label_model_id> --max-texts <label_max_texts>, the catalog environment of
-          the Silver task and its log group with the stream prefix "labeller";
-        - a task role that may read the Glue database and the Silver table files, list and
-          write under enrichment/v1/text_label/ and nowhere else, and call bedrock:InvokeModel
-          on the resources of label_model_arns only;
+          --batches s3://<lake bucket>/enrichment/v1/text_label_batch --model-id
+          <label_model_id> --max-texts <label_max_texts>, the catalog environment of the Silver
+          task, its log group with the stream prefix "labeller", and one secret: the
+          environment variable ANTHROPIC_API_KEY from the Parameter Store parameter named by
+          label_api_key_parameter. Terraform reads and writes no value of that parameter; the
+          user creates it.
+        - an execution role of its own that may write the task's log streams and call
+          ssm:GetParameters on that one parameter, and nothing else. The parameter uses the
+          account's default key for the Parameter Store, which needs no further permission.
+        - a task role that may read the Glue database and the Silver table files, and list,
+          read and write under enrichment/v1/text_label/ and enrichment/v1/text_label_batch/
+          and nowhere else. It has no model permission and no access to the parameter.
         - an EventBridge rule whose pattern is: source aws.ecs, detail-type "ECS Task State
           Change", the cluster's ARN, lastStatus STOPPED, stopCode EssentialContainerExited,
           containers exitCode 0, and group "family:<the Silver task definition's family>"; its
           state follows labeller_enabled; its target runs the labeller task on Fargate with the
           Silver task's network configuration, through a role limited to ecs:RunTask on this
           task definition and iam:PassRole on its two roles.
-        infra/silver/variables.tf: label_model_id (string), label_model_arns (list of strings),
-        label_max_texts (number, default 2000) and labeller_enabled (bool, default false).
-        infra/silver/ecs.tf: the Silver task's command gains --text-labels with the same
-        location, and its role may read that prefix. infra/silver/alerts.tf: the failure mail's
-        text says that the task may be the Silver task or the labeller and that only the Silver
-        task is retried by the queue.
+        infra/silver/variables.tf: label_model_id (string), label_api_key_parameter (string,
+        the parameter's name), label_max_texts (number, default 2000) and labeller_enabled
+        (bool, default false).
+        infra/silver/ecs.tf: the Silver task's command gains --text-labels with the answers'
+        location, and its role may list and read that prefix. infra/silver/alerts.tf: the
+        failure mail's text says that the task may be the Silver task or the labeller, that
+        only the Silver task is retried by the queue, and that the labeller's exit code 1 also
+        means a batch without a succeeded request (the credit, the key or the model).
         Nothing is applied in this task.
       status: "not_started"
       complexity: "high"
       estimated_hours: 2.5
       depends_on: ["3.2"]
       branch: "feature/text-labels/4.1-infrastructure"
-      commit_message: "feat(infra): the text labeller task, its role and its start rule"
+      commit_message: "feat(infra): the text labeller task, its key, its roles and its start rule"
       acceptance_criteria:
         - "terraform fmt -check and validate pass"
         - "The start rule's pattern names the Silver task definition's family, so a stopped labeller does not match it"
-        - "The labeller's role names one model resource list, one write prefix and no wildcard action"
+        - "The labeller's task role names two write prefixes, no model action, no parameter and no wildcard action"
+        - "The key appears only as a secret reference by parameter name; no resource or data source reads its value, and only the labeller's execution role may read the parameter"
         - "With labeller_enabled false the rule is disabled"
-        - "No account id, bucket name or ARN is committed; the new variables have no real default"
+        - "No account id, bucket name, parameter name or ARN is committed; the new variables have no real default"
       tdd: null
       validation_commands:
         - "terraform -chdir=infra/silver init -backend=false && terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
@@ -802,12 +1096,21 @@ technical_plan:
     - id: "4.2"
       title: "Runbook and README"
       description: |
-        docs/silver-rebuild.md: a section on text labels with the flow (Silver run, labeller,
-        next Silver run), the stored layout, the two commands and their report lines, the cap,
-        what a new LABEL_VERSION means and costs, the label definitions, the reading (a label is
-        the model's reading of the description under a version, with the measured precision and
-        recall of the implementation note; null means not labelled or not a sale), how to turn
-        the labeller off, and the cost table. listing_text_label joins "The tables" with the
+        docs/silver-rebuild.md: a section on text labels with the flow (a Silver run, the
+        labeller submits; a later run, the labeller collects; the next Silver run that
+        processes a commit writes the table), the lag this gives, including that the answers
+        for a week's last commits reach the table with the next landing commit and that a
+        manual backfill writes it at once (review R5), the stored layouts of answers and batch
+        records, the two commands and their report lines, the cap, the labeller's exit codes,
+        what a new LABEL_VERSION means and costs (an open batch of the old version is never
+        collected), the label definitions, the reading (a label is the model's reading of the
+        description under a version, with the measured precision and recall of the
+        implementation note and the size of the sample behind them; null means not labelled or
+        not a sale), the key (where it lives, how it is replaced, that it never enters a file
+        or a log), the API credit and what happens when it is used up, what the provider keeps
+        and for how long, with a link to its retention terms (review R7), how to turn the
+        labeller off, and the cost table. The manual backfill's command override names
+        --text-labels beside --census-sections. listing_text_label joins "The tables" with the
         note that it exists only for a run given --text-labels. README.md: the status text and
         the architecture bullet name the enrichment input and the table.
       status: "not_started"
@@ -848,29 +1151,35 @@ technical_plan:
         1. Wait for the image of the merge commit; set silver_image and the four new variables
            in the gitignored tfvars, labeller_enabled false; terraform plan and apply. Only the
            resources of task 4.1 and a new Silver task definition revision may change.
-        2. Confirm that model-invocation logging is off. Start the labeller task by hand for the
-           backlog under an approved cap; from its log take the report's counts.
-        3. Let the next Silver run write the table. In Athena, as counts only: rows, labelled
-           rows, the distribution of both labels, labels on listings that are not a sale (must
-           be 0), and the cross table of renovation_state against listing.condition and against
-           the keyword strata of task 1.2.
-        4. Give the user, privately, the descriptions the model calls an auction although they
+        2. Start the labeller task by hand with a cap of one text. When its batch has ended,
+           start it again: the run must collect one valid answer. This proves the key, the
+           network route and the organization's limits from the deployed task.
+        3. Start the labeller by hand for the backlog under an approved cap, and again after
+           each batch has ended, until nothing is pending; from the logs take the reports'
+           counts.
+        4. Let a Silver run write the table: the next run that processes a landing commit, or,
+           with approval, the manual backfill of the runbook. In Athena, as counts only: rows,
+           labelled rows, the distribution of both labels, labels on listings that are not a
+           sale (must be 0), and the cross table of renovation_state against listing.condition
+           and against the keyword strata of task 1.2.
+        5. Give the user, privately, the descriptions the model calls an auction although they
            lack the keyword, at most 30 at random; record how many are auctions.
-        5. Set labeller_enabled true and apply; record the next triggered run's counts and
-           duration, and that a finished labeller started no further task.
-        6. Complete the implementation note with the counts, tokens, cost and durations; set the
-           feature plan to complete, tick its success criteria, add the progress-log entry and
-           update the registry row.
+        6. Set labeller_enabled true and apply; record the counts and durations of the next two
+           triggered runs (one submits, one collects), and that a finished labeller started no
+           further task.
+        7. Complete the implementation note with the counts, tokens, credit used and durations;
+           set the feature plan to complete, tick its success criteria, add the progress-log
+           entry and update the registry row.
       status: "not_started"
       complexity: "high"
-      estimated_hours: 2.0
+      estimated_hours: 2.5
       depends_on: ["4.2"]
       branch: "feature/text-labels/4.3-first-run-record"
       commit_message: "docs(plans): FEATURE-012 backlog, first runs and label counts"
       acceptance_criteria:
-        - "Every sale listing with a non-empty description is labelled or counted as pending or invalid"
+        - "Every sale listing with a non-empty description is labelled or counted as pending, invalid, errored or expired"
         - "No listing that is not a sale carries a label"
-        - "The cost of the backlog and the tokens are recorded and lie under the approved bound"
+        - "The credit used by the backlog and the tokens are recorded and lie under the approved bound"
         - "The share of true auctions among the model's auctions without the keyword is recorded"
         - "A finished labeller task started no further labeller task"
         - "The note holds counts only; the leak guard and the workflow validator pass"
@@ -890,7 +1199,7 @@ technical_plan:
         - "analysis/**"
       can_run_parallel_with: []
       reversible: true
-      rollback: "Set labeller_enabled false and apply; remove --text-labels by setting silver_image back and applying; drop the Silver table listing_text_label; the stored answers may stay"
+      rollback: "Set labeller_enabled false and apply; remove --text-labels by setting silver_image back and applying; drop the Silver table listing_text_label; the stored answers and records may stay; revoke the key in the Console if it is no longer used"
       files_to_create: []
       files_to_modify:
         - "dev/plans/implementations/FEATURE-012-text-labels.md"
@@ -902,38 +1211,43 @@ technical_plan:
     base_branch: "main"
     integration_branch: "feature/text-labels/integration"
     task_branch_strategy: |
-      Create the integration branch from main once main holds this feature's plan, review and
-      technical plan. Each task branch starts from the integration branch after the tasks it
-      depends on are merged there. Tasks 1.1 and 1.2 have no dependency and may run beside each
-      other and beside 1.3 to 1.5; every other task runs alone. Before task 3.1, FEATURE-009,
-      FEATURE-010 and FEATURE-011 must be on main, and main is merged into the integration
-      branch with --no-ff; if one of them is not merged yet, task 3.1 waits. Task 4.3 starts
-      from main after the final PR is merged.
+      The integration branch exists and holds tasks 1.1 to 1.5 and the two records of task 1.6.
+      The amendment of 2026-11-20 (the feature plan, ADR 0005, the review, the registry row and
+      this file) is committed to the integration branch as one docs commit, after the user's
+      approval, before task 1.7 starts. Each task branch starts from the integration branch
+      after the tasks it depends on are merged there. Tasks 1.8 and 1.9 may run beside each
+      other; every other task runs alone. Before task 3.1, main is merged into the integration
+      branch with --no-ff (CLAUDE.md may conflict: keep main's text and the enrichment entry).
+      Task 4.3 starts from main after the final PR is merged.
     integration_strategy: |
       After explicit user approval, merge each verified task branch into the integration branch
-      with --no-ff in the order 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3, 3.1, 3.2, 4.1, 4.2
-      (1.2 as soon as the user's labels are back, and before 1.6), never rewriting history, and
-      run validation.final_commands there. The final PR goes from the integration branch to
-      main. Task 4.3's branch goes to main through its own small PR.
+      with --no-ff in the order 1.7, 1.8, 1.9, 1.6, 2.1, 2.2, 2.3, 3.1, 3.2, 4.1, 4.2, never
+      rewriting history, and run validation.final_commands there. The final PR goes from the
+      integration branch to main. Task 4.3's branch goes to main through its own small PR.
     commit_strategy: "One focused commit per task, using the task's commit_message"
     commit_message_format: "<type>(<scope>): <description>"
     allowed_commit_types: ["feat", "test", "docs", "chore"]
     push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
     final_pr_title: "feat(silver): renovation state and auctions read from the description by a model"
     final_pr_description: |
-      Implements FEATURE-012: a labeller command stores one model answer per redacted sale
-      description as an immutable input, and a Silver run given --text-labels writes
-      listing_text_label from them. See dev/reviews/REVIEW-FEATURE-012.md (approved) and ADR
+      Implements FEATURE-012: a labeller command sends the redacted sale descriptions to a
+      Claude model as a message batch, collects the answers in a later run and stores them as
+      an immutable input, and a Silver run given --text-labels writes listing_text_label from
+      them. See dev/reviews/REVIEW-FEATURE-012.md (approved, re-reviewed 2026-11-20) and ADR
       0005. Nothing is applied by this PR; task 4.3 deploys with approval.
 
   notes:
     - "Never print, log or commit a description, a hash or a listing id; every record is counts. The evaluation set and its results stay in a private directory outside the repository."
     - "Only the description leaves Silver. The title is not redacted and names a street."
-    - "Every paid run needs the user's approval with an upper bound: the evaluation of task 1.6 and each run of task 4.3."
-    - "The Bedrock request is checked against botocore's service model by the stub. If the service rejects the forced tool choice or the output limit for the chosen model in task 1.6, stop and return to the reviewer; do not work around it in the operator run."
-    - "The model id and its ARNs are account configuration: task arguments and gitignored tfvars, never a default in the repository."
+    - "Every paid run needs the user's approval with an upper bound: each run of task 1.6 and each run of task 4.3. Claude Haiku 5.5 comes first; Claude Sonnet 5.5 is evaluated only if renovated fails."
+    - "The API key never passes through the chat, an argument, a file, a fixture, a commit or a log. The user writes it to the Parameter Store; a command gets it as ANTHROPIC_API_KEY in its environment only."
+    - "Load the claude-api skill before writing src/enrichment/claude_api.py: model ids, the structured output and the batch calls come from its files and from the pinned SDK's types. If a name in this plan differs from the SDK's, the SDK's is used and the commit message says so."
+    - "Do not set a sampling parameter, a thinking setting or a forced tool choice in the Claude API request: the candidate models reject them. The Bedrock request is not changed."
+    - "If the provider rejects the structured output or the output limit for a candidate model, or a batch refuses the request of task 1.7, stop and return to the reviewer; do not work around it in an operator run."
+    - "The model id is configuration: a task argument and gitignored tfvars, never a default in the repository. The parameter's name is configuration too."
     - "infra/silver/*.tfvars hold real values and are gitignored: never stage, print or commit them."
     - "The start rule must name the Silver task definition's family. A rule on the cluster alone starts the labeller from the labeller."
     - "Read the columns the text labels need from Silver before listing_quality(), listing_events() or listing_prices() is called: each replaces temporary tables the fallback read uses."
     - "A changed prompt, schema or model is a new LABEL_VERSION; the evaluation is repeated for it before the backlog is labelled again."
+    - "A text whose request fails every time is submitted again by every run. The report counts it; it is accepted because one text costs a fraction of a cent a run."
     - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

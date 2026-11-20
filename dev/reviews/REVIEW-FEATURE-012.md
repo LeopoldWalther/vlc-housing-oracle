@@ -240,3 +240,262 @@ evaluation set from a file sent by mail.
 
 Task 1.2 starts now: the operator draws the sample and mails it to the user. Run
 `/implementer FEATURE-012` for phase 1 once this plan is on `main`.
+
+---
+
+# Re-review — the amendment of 2026-11-20
+
+**Reviewer:** `reviewer` · **Date:** 2026-11-20 · **Plan:** [FEATURE-012](../plans/FEATURE-012-text-labels.md)
+**Verdict:** ✅ Approved
+
+The review above stays as it was written. This part covers only what the amendment changes: the
+Claude API instead of Amazon Bedrock, and a labeller that submits a message batch in one run and
+collects it in a later one.
+
+## Summary
+
+The amended design is sound. What is open is read from what is stored (a batch's record and its
+part), the evaluation and the labeller send one request built by one function, and the secret
+enters the task only as a reference. Seven corrections were needed, R1 to R7; all follow from the
+repository, from the provider's documentation or from the account's state on the day, and all are
+folded into the plan and the technical plan. Tasks 1.7 to 1.9 can start; the paid part of task
+1.6 waits for the user's key.
+
+## Evidence checked
+
+- **Plan and dependencies:** the amended plan and ADR 0005 (uncommitted on
+    `feature/text-labels/integration`, which is 3 commits ahead of its remote and 31 behind
+    `main`); the implementation note with both Bedrock runs; technical plan version 1.0.
+- **Code, tests, data, and configuration:**
+    - `src/enrichment/prompt.py`: `SYSTEM_PROMPT` says "record two labels with the tool
+        record_text_label. Answer only through the tool."; `tests/test_enrichment_labeler.py`
+        asserts that the prompt names the tool and that the version is `tl2`.
+    - `src/enrichment/bedrock.py`: `MAX_OUTPUT_TOKENS = 200`, a forced tool choice.
+    - `src/enrichment/evaluate.py`: the weight of a text is its stratum's population divided by
+        the stratum's texts in the file, so 30 more texts in stratum F lower its weight from 261
+        to 141 without a code change.
+    - `infra/silver/ecs.tf`: the task has a public address and its security group allows
+        outbound HTTPS to any address, so the route to the Claude API is open; the execution
+        role may write logs only.
+    - `infra/silver/alerts.tf`: the failure rule matches every stopped task of the cluster with
+        a non-zero exit code, so it covers the labeller.
+    - `docs/silver-rebuild.md`: a scheduler queues one Silver start a day at 05:30 UTC; a run
+        with nothing pending exits 0 within a minute and writes nothing.
+    - `requirements.txt`: `anthropic` is not installed; Python is 3.12.
+    - `python dev/tools/validate_workflow.py` and `python dev/tools/check_leaks.py` pass with
+        the amended artifacts.
+- **Evidence reviewed:**
+    - The provider's documentation as the `claude-api` skill holds it (cached 2026-11-03):
+        list prices of $0.10 / $0.50 (Claude Haiku 5.5, prompts up to 100,000 tokens) and
+        $2 / $10 (Claude Sonnet 5.5) per million tokens; a batch costs half, holds up to 100,000
+        requests or 256 MB, ends within 24 hours and keeps its results for 29 days; structured
+        outputs exist for both models; Claude Sonnet 5.5 rejects a forced tool choice; both
+        models reject non-default sampling parameters; both think by default, the thinking
+        counts toward the output limit, and a response may begin with thinking blocks.
+    - The plan's cost table recomputed from 2,000 input and 500 output tokens per text: $0.73 a
+        month and $3.88 for the backlog with Claude Haiku 5.5, $14.63 and $77.56 with Claude
+        Sonnet 5.5, $0.31 and $6.21 for three direct evaluation runs of 230 texts. The table is
+        right. It counts 17,236 texts where about 15,700 are distinct, which errs on the safe
+        side.
+    - The provider's page on API credits (read 2026-11-20) and the account's billing page as
+        the user showed it: a Team plan since 2026-11-17, so the credit can be linked from
+        2026-11-24; the Console organization exists and holds no credit.
+- **Unverified assumptions:**
+    - A batch accepts the request with a structured output and a 64-character `custom_id`, and
+        the organization's limits admit it. Owner: operator. Verification point: the batch of
+        one text in task 1.6, before phase 2 is built (R3).
+    - Claude Haiku 5.5 passes the gate for `renovated`. Owner: operator and user. Verification
+        point: task 1.6.
+    - Tokens per text, above all the thinking of Claude Sonnet 5.5 at its default effort.
+        Owner: operator. Verification point: task 1.6 replaces the estimate.
+    - The exact names of the SDK's batch fields. Owner: implementer. Verification point: task
+        1.9 takes them from the pinned SDK's types.
+
+## Gate result
+
+| Gate | Result | Evidence / required action |
+| --- | --- | --- |
+| Outcome and scope are measurable and bounded | Pass | The gate now needs three passing runs; after R5 the lag is stated as it is |
+| Repository and dependency assumptions match reality | Pass | After R1, R2 and R6 |
+| Supporting evidence is reproducible and sufficient | Pass | Prices and limits from the documentation; the batch path is proven in task 1.6 (R3) |
+| Design is the simplest adequate option | Pass | Two stored objects are the whole state; batches are the user's decision |
+| TDD slices and validation commands are executable | Pass | Fake client and fake batches; no test calls the service or reads the key |
+| Data integrity, data sourcing, privacy, and security are addressed | Pass | After R4 and R7; the key is a reference by name |
+| Operations, recovery, migration, and cost are addressed | Pass | After R4 and R5; about $0.10 a month on AWS, the rest from the credit |
+
+## Strengths
+
+- A batch is open from its record until its part exists. A crashed run, a repeated run and a run
+    that finds an unfinished batch all need no extra rule.
+- One function builds the request for the evaluation and for the batch, so the gate measures what
+    operation sends.
+- The measurement problem of 2026-11-19 is answered where it arose: more texts in the stratum
+    whose single text decided the value, and three runs instead of one.
+- The key is created by the user, named by a variable and injected by ECS; no Terraform state, no
+    argument and no log holds it.
+
+## Findings
+
+### 🟡 R1 — The prompt tells the model to use a tool the request does not have
+
+- **Problem:** the amendment keeps `SYSTEM_PROMPT` unchanged and asks for the answer as a
+    structured output, not through a tool.
+- **Evidence:** `src/enrichment/prompt.py` lines 32 to 33; the amendment's section "The Claude
+    API request".
+- **Impact:** the gate would measure a model that is told to call something that does not exist,
+    and the prompt would change after the gate, without a new measurement.
+- **Recommendation:** task 1.7 rewords that one sentence so that it names no tool and sets
+    `LABEL_VERSION` to `tl3`, before the gate is measured. The Bedrock request forces its tool
+    and works with the new wording.
+- **Disposition required:** fixed in the feature plan and in task 1.7.
+
+### 🟡 R2 — The credit described is not the user's
+
+- **Problem:** the plan names $100 on a Max plan and treats the change to a Team plan as a future
+    risk.
+- **Evidence:** the account's billing page on 2026-11-20: a Team plan since 2026-11-17.
+- **Impact:** the paid evaluation was planned for a credit that cannot be linked before
+    2026-11-24.
+- **Recommendation:** the plan states the Team credit ($100 for each Premium and $20 for each
+    Standard seat, pooled) and the date. Either model's backlog fits one month of it. The
+    evaluation may run earlier on a small purchased amount if the user wants it.
+- **Disposition required:** fixed in the feature plan.
+
+### 🟡 R3 — The batch path is first tried after everything is built on it
+
+- **Problem:** the evaluation sends direct requests, and the first batch is sent in task 4.3.
+- **Evidence:** the plan's assumption about batches and task 4.3.
+- **Impact:** if a batch refused the structured output, the `custom_id` or the organization's
+    limits, phases 2 to 4 would be built before anyone knew.
+- **Recommendation:** task 1.6 sends and collects one batch of one text with the code of task
+    1.9, before the gate is measured. It costs a fraction of a cent.
+- **Disposition required:** fixed in the feature plan and in task 1.6, which now depends on 1.9.
+
+### 🟡 R4 — A used-up credit would not fail a run
+
+- **Problem:** the plan says a run fails and alerts when the credit ends. With batches the
+    failure returns later, as errored requests of a collected batch, in a run that exits 0.
+- **Evidence:** the amended design; `infra/silver/alerts.tf` alerts on a non-zero exit code only.
+- **Impact:** labelling could stop for weeks while every run reports success and submits the
+    same texts again.
+- **Recommendation:** a run writes its parts and then exits 1 when a collected batch held
+    requests and none succeeded. A single failed request is counted and does not fail the run.
+- **Disposition required:** fixed in the feature plan and in tasks 2.2, 2.3 and 4.1.
+
+### 🟡 R5 — The stated lag does not hold at the end of a week
+
+- **Problem:** the plan promises a label with the second Silver run after its text was seen.
+- **Evidence:** the acquisition side writes no commit between the end of a week's collection and
+    Sunday 00:00 UTC; the daily Silver start finds nothing pending and writes no table.
+- **Impact:** the answers for a week's last commits are collected within a day and reach
+    `listing_text_label` only with the next landing commit, some days later. A reader of the
+    runbook would expect hours.
+- **Recommendation:** accept and document it. A Silver run that rewrites the table when only the
+    answers changed would be a second kind of pending work, for labels nobody waits for; a manual
+    backfill writes the table at once when someone does.
+- **Disposition required:** accepted with this rationale; stated in the feature plan and in
+    tasks 4.2 and 4.3.
+
+### 🟡 R6 — The output limit and the reading of an answer were left open
+
+- **Problem:** the plan asks for "an explicit output limit that leaves room for the model's
+    thinking" and does not say how a response becomes an answer.
+- **Evidence:** the Bedrock labeller's limit is 200 tokens; the candidate models think by
+    default, and thinking counts toward the limit.
+- **Impact:** with a small limit a response ends before its answer, the text stays pending and
+    is sent again by every run.
+- **Recommendation:** a limit of 4,096 tokens; the answer is the one text block, chosen by type;
+    a response that did not end its turn is an invalid answer.
+- **Disposition required:** fixed in the feature plan and in task 1.7.
+
+### 🟡 R7 — What the provider keeps
+
+- **Problem:** the privacy section says where the text goes and not how long it stays there.
+- **Evidence:** a batch's results are readable at the provider for 29 days; on Bedrock nothing
+    was kept, and the first review relied on that.
+- **Impact:** a statement about personal data that is incomplete, in a public repository.
+- **Recommendation:** the plan states the 29 days, and the runbook cites the provider's retention
+    terms.
+- **Disposition required:** fixed in the feature plan and in task 4.2. The user's decision to
+    send the redacted text to the provider stands.
+
+### 🟢 L4 — The effort is the model's default
+
+- **Evidence:** the default effort is medium for Claude Haiku 5.5 and high for Claude Sonnet 5.5,
+    so the larger model also thinks more per text than the estimate of 500 output tokens assumes.
+- **Suggestion:** none before task 1.6. If the measured tokens of Claude Sonnet 5.5 make its
+    backlog exceed a month's credit, a named effort is a new `LABEL_VERSION` and a new run.
+- **Benefit:** the decision is made on measured tokens.
+
+### 🟢 L5 — A text that fails every time
+
+- **Evidence:** an errored, refused or invalid request leaves its text pending, and every run
+    submits it again.
+- **Suggestion:** accepted; the report counts such requests and one text costs a fraction of a
+    cent a run. A list of texts to skip would be a second state.
+- **Benefit:** no code for a case not yet seen.
+
+## Alternatives considered
+
+- **Direct requests in the labeller** — one flow instead of two. Trade-off: twice the price and a
+    task that runs as long as the texts take. Verdict: the user chose batches on 2026-11-20; not
+    reopened.
+- **The provider's list of batches as the state** — no record to write. Trade-off: the state
+    would live outside the lake, mix with other uses of the same organization and vanish with
+    the provider's retention. Verdict: stick with the plan.
+- **Rewrite the table when only answers changed** — see R5. Verdict: not now.
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation | Owner / signal |
+| --- | --- | --- | --- | --- |
+| The gate passes on a sample that cannot prove it | Med | Med | 65 texts in the largest stratum and three runs; the runbook gives the measured values with the sample's size | User; task 1.6 |
+| The evaluation labels are a model's, not a person's | High | Low | Recorded in the implementation note; the user declined a human check | User |
+| The credit ends or the plan changes | Low | Med | R4 makes the run fail; purchased credit or the Bedrock labeller is the way back | Operator; the failure mail |
+| The key leaks | Low | Med | One SecureString, one role that reads it, revocation in the Console | User |
+| Residual personal data reaches the provider and stays 29 days | Low | Med | Redaction `r2`; R7 states the retention | Operator |
+| Labels of a week's last commits arrive days later | High | Low | R5: documented; a manual backfill writes the table | Operator |
+| A crash between submitting and recording leaves a batch nobody collects | Low | Low | Its texts are submitted again, at most one capped batch | — |
+
+## Effort check
+
+- **Plan estimate:** L (~20h), not changed by the amendment
+- **Reviewer estimate:** L (~26h) — confidence Medium
+- **Why it differs / hidden complexity:** three new tasks in phase 1 (about 3.5 hours), a second
+    stored object and two flows in phase 2, and a longer operator task 1.6. About 6.5 hours are
+    done.
+
+## Reuse & conflicts
+
+- **Reuse:** `label_from_answer` and `LabelResult` of `src/enrichment/labeler.py`; the evaluation
+    command as it is; the failure rule and topic of `infra/silver/alerts.tf`; the Silver task's
+    network configuration.
+- **Conflict / coordinate with:** `main` is 31 commits ahead of the integration branch
+    (FEATURE-011 and others) and is merged into it before task 3.1; `CLAUDE.md` may conflict.
+
+## Technical-plan readiness
+
+- **Artifact:** `dev/plans/technical/FEATURE-012-technical-plan.yaml`, version 2.0
+- **Tasks:** 17 (5 done, 1 in progress, 11 not started); dependency graph and critical path
+    verified yes
+- **TDD contract:** RED failures and commands verified yes
+- **File boundaries:** create/modify paths contained in allowed files; overlaps absent yes
+- **Git workflow:** base, integration, task ancestry, and publish policy unambiguous yes
+- **Required checks:** `python-lint-and-test`, `terraform-validate`, `workflow-consistency`
+
+## Approval criteria
+
+- **Blockers (must fix):** none
+- **Required dispositions:** R1 to R4, R6 and R7 fixed in the feature plan and the technical
+    plan; R5 accepted and documented
+- **Optional:** L4 and L5, no change
+- **Accepted residual risk:** the gate's statistical weight; the lag at the end of a week; a
+    text that fails every time; the provider's retention under the user's decision
+- **Technical plan:** emitted
+
+## Next step
+
+Commit the amendment to the integration branch with the user's approval, then run
+`/implementer FEATURE-012` for tasks 1.7 to 1.9. The paid part of task 1.6 waits for the user:
+link the credit (from 2026-11-24) or buy a small amount, create the key and store it in the
+Parameter Store.

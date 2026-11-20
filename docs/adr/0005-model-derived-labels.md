@@ -39,6 +39,14 @@ run would break both promises, and a backfill would pay for every text again.
     with the precision measured on a private evaluation set.
 - Processing may happen outside the EU: the model is reached through a global inference profile,
     by the user's decision of 2026-11-16.
+- **Amended 2026-11-20:** which service answers is not part of this decision. By the user's
+    decision the model is reached through the Claude API, so the redacted description leaves
+    the AWS account, and the labeller holds one secret, the API key. A stored answer names its
+    model, not its provider.
+- **Amended 2026-11-20:** the labeller sends its requests as a batch and collects the answers in
+    a later run, so an answer is stored some hours after its text was first seen. What is open
+    is read from what is stored: a batch is open from the record of its texts until its part
+    exists.
 
 ## Alternatives considered
 
@@ -48,5 +56,7 @@ run would break both promises, and a backfill would pay for every text again.
     of hours on attributes that rarely change.
 - **An agent runtime** (Amazon Bedrock AgentCore). Rejected: it hosts agent loops with tools,
     sessions and memory; this job is one call per text.
-- **Batch inference.** Rejected for now: its discount does not outweigh a second flow and a
-    minimum job size at a backlog of thousands of texts and a few hundred new ones a month.
+- **Batch inference.** Rejected on 2026-11-16 as a second flow, chosen on 2026-11-20 by the
+    user's decision: nothing waits for an answer, and a batch costs half.
+- **Direct requests in the labeller.** Rejected on 2026-11-20: twice the price and a task that
+    runs as long as the texts take, to have an answer hours earlier that nobody is waiting for.
