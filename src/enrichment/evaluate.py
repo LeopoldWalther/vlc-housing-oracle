@@ -1,6 +1,7 @@
 """Evaluate a text labeller against a labelled evaluation set, raw and weighted by stratum.
 
-    python -m src.enrichment.evaluate --evaluation-set <csv> --model-id <id> [--results <csv>]
+    python -m src.enrichment.evaluate --evaluation-set <csv> --model-id <id>
+        --provider {bedrock,claude-api} [--results <csv>]
 
 The evaluation set is private: it is read by path, and nothing but counts, measures and, with
 ``--results``, row numbers and labels leave this command.
@@ -30,6 +31,8 @@ COLUMNS = (
 DECISIVE_VALUES = ("renovated", "needs_renovation", "is_auction")
 
 BOOLEANS = {"true": True, "false": False}
+
+PROVIDERS = ("bedrock", "claude-api")
 
 
 class EvaluationSetError(ValueError):
@@ -114,7 +117,12 @@ def main(
         description="Evaluate a text labeller against a labelled evaluation set.",
     )
     parser.add_argument("--evaluation-set", required=True, type=Path)
-    parser.add_argument("--model-id", required=True, help="Bedrock model or inference profile id")
+    parser.add_argument(
+        "--model-id",
+        required=True,
+        help="a Claude API model id, or a Bedrock model or inference profile id",
+    )
+    parser.add_argument("--provider", required=True, choices=PROVIDERS)
     parser.add_argument("--results", type=Path, help="write row numbers and labels to this CSV")
     arguments = parser.parse_args(argv)
     try:
@@ -123,11 +131,7 @@ def main(
         print(f"evaluation set refused: {error}", file=sys.stderr)
         return 2
     if labeler is None:
-        import boto3
-
-        from src.enrichment.bedrock import BedrockTextLabeler
-
-        labeler = BedrockTextLabeler(boto3.client("bedrock-runtime"), arguments.model_id)
+        labeler = _labeler(arguments.provider, arguments.model_id)
 
     started = clock()
     results = [labeler.label(text.description) for text in texts]
@@ -149,6 +153,21 @@ def main(
     if arguments.results:
         _write_results(arguments.results, texts, answers)
     return 0
+
+
+def _labeler(provider: str, model_id: str) -> TextLabeler:
+    """The labeller of a provider; the Claude API client reads its key from the environment."""
+    if provider == "bedrock":
+        import boto3
+
+        from src.enrichment.bedrock import BedrockTextLabeler
+
+        return BedrockTextLabeler(boto3.client("bedrock-runtime"), model_id)
+    import anthropic
+
+    from src.enrichment.claude_api import ClaudeApiTextLabeler
+
+    return ClaudeApiTextLabeler(anthropic.Anthropic(max_retries=5), model_id)
 
 
 def _write_results(

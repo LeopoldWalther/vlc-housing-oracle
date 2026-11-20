@@ -47,11 +47,21 @@ class EvaluateTest(unittest.TestCase):
             writer.writerows(rows)
         return path
 
-    def run_main(self, path: Path, labeler: FakeLabeler, *extra: str) -> tuple[int, str, str]:
+    def run_main(
+        self, path: Path, labeler: FakeLabeler, *extra: str, provider: str = "claude-api"
+    ) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(
-                ["--evaluation-set", str(path), "--model-id", "fake", *extra],
+                [
+                    "--evaluation-set",
+                    str(path),
+                    "--model-id",
+                    "fake",
+                    "--provider",
+                    provider,
+                    *extra,
+                ],
                 labeler=labeler,
                 clock=ticking_clock(),
             )
@@ -193,6 +203,37 @@ class EvaluateTest(unittest.TestCase):
                 self.assertIn("row 1", errors)
                 self.assertIn(column, errors)
                 self.assertNotIn("secreto", output + errors)
+                self.assertEqual(labeler.asked, [])
+
+    def test_the_report_is_the_same_for_either_provider(self) -> None:
+        rows = [(1, "A", 3, "uno", "renovated", "false"), (2, "B", 7, "dos", "original", "true")]
+        answers = {"uno": TextLabel("renovated", False), "dos": TextLabel("unknown", True)}
+        path = self.write_set(rows)
+
+        reports = {
+            provider: self.run_main(path, FakeLabeler(answers), provider=provider)
+            for provider in ("bedrock", "claude-api")
+        }
+
+        self.assertEqual(reports["bedrock"], reports["claude-api"])
+        self.assertEqual(reports["bedrock"][0], 0)
+
+    def test_the_provider_is_required_and_checked_before_the_set_is_read(self) -> None:
+        missing = str(self.directory / "missing.csv")
+        for case, provider in (("no provider", []), ("unknown", ["--provider", "openai"])):
+            with self.subTest(case=case):
+                labeler = FakeLabeler({})
+                with (
+                    contextlib.redirect_stderr(io.StringIO()) as err,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main(
+                        ["--evaluation-set", missing, "--model-id", "fake", *provider],
+                        labeler=labeler,
+                    )
+
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--provider", err.getvalue())
                 self.assertEqual(labeler.asked, [])
 
 
