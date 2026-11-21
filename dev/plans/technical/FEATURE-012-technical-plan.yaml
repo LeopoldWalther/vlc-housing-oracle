@@ -696,7 +696,7 @@ technical_plan:
         and description, one row per pending text of the conventions, ordered by text_sha256.
         The function registers its inputs under names of its own and unregisters them;
         LABEL_VERSION reaches the statement as a DuckDB variable.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["1.6"]
