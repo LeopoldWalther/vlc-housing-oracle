@@ -770,7 +770,7 @@ technical_plan:
         - check_model(stored, model_id) raises LabelVersionError, naming the version and both
           model ids, when stored answers of LABEL_VERSION carry another model id.
         Neither function waits or sleeps.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2.0
       depends_on: ["2.1", "1.9"]
