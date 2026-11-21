@@ -15,12 +15,13 @@ one.
 
 ```bash
 python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --catalog <name> \
-    [--mode incremental|backfill] [--metrics] [--census-sections <vintage-directory>]
+    [--mode incremental|backfill] [--metrics] [--census-sections <vintage-directory>] \
+    [--text-labels <dir-or-s3://lake-bucket/enrichment/v1/text_label>]
 ```
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six. Given `--census-sections`, it also recomputes `listing_location` from Silver's whole `listing` and the vintage's polygons and replaces it. Then it records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six. Given `--census-sections`, it also recomputes `listing_location` from Silver's whole `listing` and the vintage's polygons and replaces it. Given `--text-labels`, it also recomputes `listing_text_label` from Silver's whole `listing` and `listing_text` and the stored answers and replaces it. Then it records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -33,6 +34,11 @@ Silver that are not in the registry. A run with nothing pending computed nothing
 ([Reference data](#reference-data)). A run given it also writes `listing_location`; a run without
 it neither reads reference data nor writes that table, and needs no spatial extension. The AWS
 task passes it when the variable `census_sections` is set.
+
+`--text-labels` names the text labeller's stored answers, local or `s3://`
+([Text labels](#text-labels)). A run given it also writes `listing_text_label`, with null labels
+while no answer is stored; a run without it neither reads the answers nor writes that table. The
+AWS task always passes it.
 
 A run prints, for example:
 
@@ -52,15 +58,17 @@ listing_price: snapshot <snapshot-id>
 feature_pattern: snapshot <snapshot-id>
 listing_feature_label: snapshot <snapshot-id>
 listing_location: snapshot <snapshot-id>
+listing_text_label: snapshot <snapshot-id>
 unknown feature patterns: 0
 ```
 
-The `listing_location` line appears only for a run given `--census-sections`.
+The `listing_location` line appears only for a run given `--census-sections`, the
+`listing_text_label` line only for a run given `--text-labels`.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Every table and the ingest log committed, or nothing was pending. |
-| 1 | Refused: landing breaks the contract (`LandingContractError`), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet), or the census-section vintage cannot be read or fails its check (`ReferenceDataError`). The message names a table, a run and a count, or the vintage's path and its defect, never a value. |
+| 1 | Refused: landing breaks the contract (`LandingContractError`), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet), or the census-section vintage cannot be read or fails its check (`ReferenceDataError`), or a stored answer lacks a column (`StoredAnswerError`). The message names a table, a run and a count, or the vintage's path and its defect, never a value. |
 | 2 | Usage error, for example a `--landing` path that is not a directory. |
 
 The first run into new, empty tables also prints PyIceberg's `UserWarning: Delete operation did
@@ -118,7 +126,8 @@ All live in the namespace `vlc_housing_silver`. Every row carries `source` and
 `transformation_version = 'silver-v1'`; all instants are UTC and money is integer euros. A
 listing seen on one day by several runs keeps its newest sighting, ordered by the run's
 `run_started_at` (never by the `run_id` string), and every row keeps the `run_id` it came from.
-`listing_location` exists only where a run was given `--census-sections`.
+`listing_location` exists only where a run was given `--census-sections`, `listing_text_label`
+only where a run was given `--text-labels`.
 
 | Table | Partition | One row per | Notes |
 | --- | --- | --- | --- |
@@ -134,6 +143,7 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
 | `listing_price` | — | listing and price period | The prices a listing was seen at, in order, with the first and last sighting of each, the observed and the declared previous price, and `is_current` on the last period. See below. |
 | `listing_location` | — | listing with a detail record | The census section, district and municipality the listing's coordinates lie in, as the statistics office codes them, with the `reference_vintage` of the boundaries. Null codes without coordinates or outside every polygon. An inferred label. See below. |
+| `listing_text_label` | — | row of `listing_text` | `renovation_state` and `is_auction` as a language model read them from the redacted description, with `label_version`, `model_id` and `labeled_at`. Null until the text is labelled, and for every listing that is not a sale. An inferred label. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
 
 ### `listing_quality`
@@ -396,6 +406,184 @@ and `source_listing_id`.
   first such run; no backfill is needed. A run without the argument leaves an existing table
   as it is, so the table goes stale while the argument is missing.
 
+### `listing_text_label`
+
+What the redacted description says about the home's state and whether it is sold at auction, as
+a language model read it ([ADR 0005](adr/0005-model-derived-labels.md)). The rule is
+`src/silver/sql/listing_text_label.sql`; the answers come from the [text labeller](#text-labels).
+Join the table to `listing` on `source` and `source_listing_id`.
+
+- **The rule.** A row of `listing_text` takes the newest stored answer of the current
+  `label_version` for `sha256(description)`, and only when the listing is a sale and its
+  description is not blank. Two listings with one description carry the same answer.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `source`, `source_listing_id` | `VARCHAR` | The listing |
+| `renovation_state` | `VARCHAR` | `needs_renovation`, `new_build`, `renovated`, `original` or `unknown`; null when not labelled or not a sale |
+| `is_auction` | `BOOLEAN` | Whether the home is acquired through an auction; null as `renovation_state` |
+| `label_version` | `VARCHAR` | The prompt, schema and model the answer came from; null with the labels |
+| `model_id` | `VARCHAR` | The model that answered; null with the labels |
+| `labeled_at` | `TIMESTAMP WITH TIME ZONE` | The end of the batch that answered; null with the labels |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+**The definitions**, the same wording for the evaluation labels and the prompt.
+`renovation_state` is what the description says about the home as a whole, decided in this
+order; the first that applies wins:
+
+1. `needs_renovation`: it needs works or is sold to be renovated ("para reformar", "a reformar",
+   "necesita reforma", "para actualizar"). A habitable home for which updating is offered as an
+   option is `original`.
+2. `new_build`: new construction, never lived in.
+3. `renovated`: the home as a whole was renovated, whenever that was ("reformado", "reforma
+   integral", "totalmente reformado", "a estrenar tras reforma"). Partial works ("parcialmente
+   reformado", a renewed kitchen or bathrooms) are `original`.
+4. `original`: habitable as it is, with no whole renovation stated; "buen estado" and "para entrar
+   a vivir" belong here.
+5. `unknown`: the description says nothing about the state.
+
+`is_auction` is true when the home is acquired through an auction or the assignment of an auction
+award ("subasta", "puja", "cesión de remate"), false otherwise, also when the text says it is not
+an auction. The exact prompt is `src/enrichment/prompt.py`.
+
+**The reading.**
+
+- A label is the model's reading of the description under one `label_version`, not a fact about
+  the home: a description can be wrong, silent or advertising.
+- For `tl3` (Claude Haiku 5.5) the evaluation on 230 hand-labelled sale descriptions, weighted
+  by stratum, measured in three runs a precision of 0.99 to 1.00 for `renovated`,
+  `needs_renovation` and `is_auction`, and a recall of 0.88 to 0.91 for `renovated`, 0.89 to 0.90
+  for `needs_renovation` and 0.99 to 1.00 for `is_auction`. The labels behind it are one reader's;
+  the sample is small, so read these as a few points either way
+  (`dev/plans/implementations/FEATURE-012-text-labels.md`).
+- A missed `renovated` most often reads as `original`. `unknown` and `original` are the least
+  separable values.
+- **Null means no evidence:** the text is not labelled yet, the description is blank, or the
+  listing is not a sale. It does not mean `unknown`.
+- The table is recomputed and replaced whole in every run that processes something and is given
+  `--text-labels`, in both modes. A run without the argument leaves an existing table as it is.
+
+## Text labels
+
+The text labeller sends the redacted descriptions of sale listings to a Claude model as a
+message batch and stores the answers as an immutable input beside landing, which Silver joins
+([ADR 0005](adr/0005-model-derived-labels.md)). Nothing but the redacted description and its own
+SHA-256 is sent; no listing id and no text is written to a log.
+
+### The flow
+
+1. A Silver task ends with exit code 0, and a rule starts the labeller.
+2. The labeller **collects** every batch it submitted earlier that has ended: it writes the valid
+   answers of each as one part. Then it **submits** the pending texts, up to the cap, as one new
+   batch, and writes the batch's record. It never waits for a batch.
+3. A batch ends within 24 hours, usually within minutes. The next labeller run collects it.
+4. The next Silver run that processes a commit writes `listing_text_label` with the new answers.
+
+So a text seen by Silver run N is submitted after N, collected after N+1 and in the table with
+N+2. During a week's collection landing commits every three hours, so a new text has its label
+within the day. The daily catch-up starts the labeller too, but a Silver run with nothing pending
+writes no table: the answers for a week's last commits reach the table with the next landing
+commit, on the following Sunday. A manual backfill writes the table at once.
+
+A text is **pending** when it is a non-blank description of a sale listing, has no stored answer
+of the current `label_version` and is in no open batch of it. A batch is **open** from its record
+until its part exists. The records and the parts are the whole state: there is no table of
+batches and no cursor.
+
+### The stored layout
+
+```
+<lake-bucket>/enrichment/v1/text_label/label_version=<v>/run=<batch-id>/part-0.parquet
+<lake-bucket>/enrichment/v1/text_label_batch/label_version=<v>/batch=<batch-id>/record.parquet
+```
+
+- A **part** holds the batch's valid answers, ordered by `text_sha256`: `text_sha256`,
+  `label_version`, `model_id`, `renovation_state`, `is_auction`, `labeled_at` (the batch's end),
+  `input_tokens`, `output_tokens`. It is written once, also without a row, and never replaced.
+- A **record** holds the batch's texts: `text_sha256`, `label_version`, `model_id`, `batch_id`,
+  `submitted_at`.
+- The records lie beside the answers, never below them, so Silver's read of the answers never
+  meets one.
+
+### The labeller command
+
+```bash
+python -m src.enrichment.text_labels --catalog <name> \
+    --labels <dir-or-s3://lake-bucket/enrichment/v1/text_label> \
+    --batches <dir-or-s3://lake-bucket/enrichment/v1/text_label_batch> \
+    --model-id <claude-api-model-id> --max-texts <n>
+```
+
+It reads the key from the environment variable `ANTHROPIC_API_KEY` and prints counts only:
+
+```
+batches collected: 1
+batches open: 0
+labelled: 1987
+invalid answers: 3
+errored requests: 10
+expired requests: 0
+input tokens: 3401000
+output tokens: 176000
+pending: 812
+submitted: 812
+remaining: 0
+```
+
+- **Invalid answers** (a refusal, an answer cut off or outside the schema) and **errored or
+  expired requests** are not stored; their texts are pending again and go into the next batch.
+- **The cap** `--max-texts` bounds what one run submits (2,000 in AWS); `remaining` is what the
+  next run submits.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Collected and submitted, or nothing to do. |
+| 1 | `ANTHROPIC_API_KEY` is not set; stored answers of the current `label_version` came from another model; a stored part lacks a column; a batch answered for a text outside its record; or, after the run's work is written, a collected batch had no succeeded request: the API credit is used up, the key is revoked or the model is refused. |
+| 2 | Usage error. |
+
+### A new label version
+
+`LABEL_VERSION` in `src/enrichment/prompt.py` names the prompt, the schema and the model
+together. A change of any of them is a new version, never an edit: every text is pending again
+and is labelled anew, at the backlog's cost (below), while the old answers stay in place and
+Silver ignores them. An open batch of the old version is never collected. A labeller run refuses
+to write when the stored answers of its version came from another model. A new version needs a
+new evaluation first.
+
+### The key
+
+- The Claude API key is a SecureString in the Parameter Store, created by the operator by hand;
+  Terraform names it (`label_api_key_parameter`) and never reads its value. ECS reads it into the
+  labeller's environment; it never enters a file, an argument, the Terraform state or a log.
+- Only the labeller's execution role may read the parameter.
+- To replace it, create a new key in the Console's workspace, overwrite the parameter
+  (`aws ssm put-parameter --name <parameter> --type SecureString --overwrite --value ...`, read
+  from a prompt, never typed into a command line that the history keeps), and revoke the old
+  key. The next task reads the new one; nothing is applied.
+
+### The API credit
+
+The Claude API is paid from the monthly API credit of the Claude plan, linked to the Console
+organization that holds the key. When the month's credit is used up, requests fail, the
+collecting run exits 1 and the failure mail follows; the texts stay pending until the credit is
+renewed. Nothing is charged, and nothing rolls over. Buying credit or enabling auto-reload in
+that organization would lift this cap.
+
+### What the provider keeps
+
+The redacted descriptions leave the AWS account and may be processed outside the EU. A batch's
+requests and answers stay readable through the API for 29 days after its creation
+([batch processing](https://platform.claude.com/docs/en/build-with-claude/batch-processing));
+everything sent is kept under the retention of Anthropic's
+[commercial terms](https://www.anthropic.com/legal/commercial-terms). A batch whose results can
+no longer be read is closed with a part without a row, and its texts are submitted again.
+
+### Turning the labeller off
+
+Set `labeller_enabled = false` and apply: no Silver task starts it any more. Silver goes on
+writing `listing_text_label` from the answers already stored. Open batches end at the provider
+and are collected once the labeller runs again, within 29 days.
+
 ## Reference data
 
 Public data that Silver reads beside landing lives in the lake as immutable vintages
@@ -502,6 +690,10 @@ daily 05:30 UTC Scheduler ─┘          │
 | `lake_bucket` | — | The private bucket holding landing, reference data and Silver. |
 | `silver_image` | — | The image by commit SHA or digest. |
 | `census_sections` | `""` | The census-section vintage the task reads, `s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>`; empty passes no `--census-sections`, and the task writes no `listing_location`. |
+| `label_model_id` | — | The Claude API model of the current `label_version`, `claude-haiku-5-5` for `tl3`. |
+| `label_api_key_parameter` | — | The name of the Parameter Store SecureString that holds the Claude API key. |
+| `label_max_texts` | `2000` | Most descriptions one labeller run submits. |
+| `labeller_enabled` | `false` | Whether a succeeded Silver task starts the labeller. Turn it on after the first batch of one text is checked. |
 | `alert_email` | — | Receives failure mail; confirm the SNS subscription once. |
 | `trigger_enabled` | `false` | Whether a landing commit queues a run. |
 | `catch_up_enabled` | `false` | Whether the daily catch-up queues a run. |
@@ -540,15 +732,16 @@ SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$N \
 aws ecs run-task --cluster $N --task-definition $N --launch-type FARGATE \
     --started-by manual-backfill \
     --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
-    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics","--census-sections","s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>"]}]}'
+    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics","--census-sections","s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>","--text-labels","s3://<lake-bucket>/enrichment/v1/text_label"]}]}'
 
 # when the task stopped with exit code 0:
 aws lambda update-event-source-mapping --uuid "$UUID" --enabled
 ```
 
 The override replaces the task definition's whole command, so it names every argument the
-scheduled runs get. Leave the last two out only while `census_sections` is not set: a backfill
-without them rewrites every other table and leaves `listing_location` as it was.
+scheduled runs get. Leave `--census-sections` and its vintage out only while `census_sections`
+is not set: a backfill without them rewrites every other table and leaves `listing_location` as it
+was. Keep `--text-labels`: a backfill without it leaves `listing_text_label` as it was.
 
 Messages queued meanwhile stay in the queue and run once the mapping is enabled again.
 
@@ -562,7 +755,7 @@ finishes, so both see the same commits. Compare counts only; never print rows of
 
 | Signal | Fires when | First step |
 | --- | --- | --- |
-| Task-failed rule | A Silver task stopped with a non-zero exit code or without its container exiting. | Read `/ecs/vlc-housing-silver`. Exit 1 names the refused table and run. |
+| Task-failed rule | A Silver or labeller task stopped with a non-zero exit code or without its container exiting. | Read `/ecs/vlc-housing-silver`, stream prefix `silver/` or `labeller/`. Silver's exit 1 names the refused table and run; the labeller's is explained [above](#the-labeller-command). A failed labeller is not retried: the next succeeded Silver task starts it again. |
 | `vlc-housing-silver-dead-letter` | A message reached the dead-letter queue: three starts in a row failed. | See below. |
 | `vlc-housing-silver-pending-runs` | `PendingRuns` stayed above 0 for six hours. | Check the consumer log `/aws/lambda/vlc-housing-silver-consumer` and the last task log. |
 | `vlc-housing-silver-unknown-feature-patterns` | A run found a feature wording that is not in the registry. | Read `feature_pattern` for rows with a null `target` and add them to `src/silver/feature_patterns.py` (see [`feature_pattern`](#feature_pattern)). The alarm clears with the first run after the image with the new registry is deployed; runs with nothing pending leave its state unchanged. |
@@ -591,6 +784,19 @@ metric `UnknownFeaturePatterns` and its alarm. Without that metric and alarm the
 nothing and is read from the task log instead. A NAT gateway (≈ $35/month) is avoided by
 the public IP; the cheaper alternative is running the command on a laptop at $0, without the
 automation. The full estimate is in the FEATURE-004 plan.
+
+The text labeller adds about $0.10/month of Fargate (0.25 vCPU, 1 GB, a minute after each Silver
+run) and nothing for its parameter. The Claude API is paid from the plan's credit; measured with
+`tl3` (Claude Haiku 5.5, about 1,706 input and 90 output tokens per description, batch prices):
+
+| Model | Per 1,000 texts | A month (~3,250 new sale texts) | The backlog (≥ 15,600 texts) |
+| --- | --- | --- | --- |
+| Claude Haiku 5.5 (`tl3`) | ~$0.11 | ~$0.35 | ~$1.70 |
+| Claude Sonnet 5.5 | ~$1.90 | ~$6 | ~$30 |
+
+Output tokens, which include the model's thinking, drive the cost. A new `label_version`
+labels the backlog again. The cheaper alternative is no model at all: keyword rules cost nothing
+and read less exactly.
 
 ## Snapshots
 
