@@ -970,7 +970,7 @@ technical_plan:
         nor writes the table. main gains --text-labels <dir-or-s3>, and _report prints
         `listing_text_label: snapshot <id>` after the last label line only for a run that wrote
         it.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["3.1"]
