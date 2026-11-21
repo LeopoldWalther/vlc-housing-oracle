@@ -654,7 +654,7 @@ technical_plan:
            the model of LABEL_VERSION tl3; a prompt change after this point is a new version
            and a new evaluation.
         7. Add the progress-log entry to the feature plan.
-      status: "in_progress"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2.0
       depends_on: ["1.2", "1.5", "1.7", "1.8", "1.9"]

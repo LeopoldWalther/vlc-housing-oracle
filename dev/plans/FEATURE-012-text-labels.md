@@ -504,3 +504,9 @@ November 2026. Task 1.6 replaces the estimate with measured tokens.
     a week reach the table with the next landing commit (R5); the output limit and the reading
     of an answer (R6); the provider's retention (R7). The technical plan is version 2.0 with
     17 tasks.
+- **2026-11-21** — Task 1.6 done through the Claude API with prompt `tl3`. Stratum F grew by 30
+    texts to 230 in all; one batch of one text ended with a valid answer (R3). Three runs each
+    of Claude Sonnet 5.5 (first, at the user's request) and Claude Haiku 5.5: every decisive
+    value passes the gate in every run, with precision 0.99 to 1.00. The user chose Claude
+    Haiku 5.5 for `tl3`, at about $0.11 per 1,000 texts in a batch; the backlog costs about
+    $1.70. The gate is closed; phase 2 can start.
