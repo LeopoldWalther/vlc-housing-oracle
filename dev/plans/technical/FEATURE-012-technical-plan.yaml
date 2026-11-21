@@ -910,7 +910,7 @@ technical_plan:
         The statement gives the table of the conventions: listing_text left-joined to the newest
         answer of LABEL_VERSION for sha256(description), and the answer is taken only when the
         listing's operation is sale.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["2.3"]

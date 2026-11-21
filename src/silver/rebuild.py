@@ -22,6 +22,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.expressions import In
 
 from src.contracts import landing_v3_sha256
+from src.enrichment.prompt import LABEL_VERSION
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
@@ -93,6 +94,14 @@ LOCATION_LISTING_COLUMNS = (
     "latitude",
     "longitude",
 )
+
+# Written only by a run given the stored answers of the text labeller (ADR 0005), so it is no
+# member of SILVER_TABLES.
+TEXT_LABEL_TABLE = "listing_text_label"
+
+# The columns of Silver listing and listing_text that the listing_text_label rule reads.
+TEXT_LABEL_LISTING_COLUMNS = ("source", "source_listing_id", "operation")
+TEXT_LABEL_TEXT_COLUMNS = ("source", "source_listing_id", "description")
 
 # The columns of one census-section vintage (ADR 0004), in the file's order.
 CENSUS_SECTION_COLUMNS = (
@@ -646,6 +655,44 @@ def listing_locations(
     finally:
         connection.unregister("location_listing")
         connection.unregister("location_sections")
+
+
+def listing_text_labels(
+    connection: duckdb.DuckDBPyConnection,
+    listing: pa.Table,
+    listing_text: pa.Table,
+    answers: pa.Table,
+) -> pa.Table:
+    """The ``listing_text_label`` rows: one per row of Silver's ``listing_text``.
+
+    ``listing`` needs ``TEXT_LABEL_LISTING_COLUMNS``, ``listing_text`` ``TEXT_LABEL_TEXT_COLUMNS``
+    and ``answers`` the stored answers' text_sha256, label_version, model_id, renovation_state,
+    is_auction and labeled_at. All three are registered under names of this rule and removed
+    again, so no ``silver_<table>`` of the session is replaced.
+    """
+    _prepare(connection)
+    connection.execute("SET VARIABLE label_version = ?", [LABEL_VERSION])
+    inputs = {
+        "text_label_listing": listing.select(list(TEXT_LABEL_LISTING_COLUMNS)),
+        "text_label_text": listing_text.select(list(TEXT_LABEL_TEXT_COLUMNS)),
+        "text_label_answer": answers.select(
+            [
+                "text_sha256",
+                "label_version",
+                "model_id",
+                "renovation_state",
+                "is_auction",
+                "labeled_at",
+            ]
+        ),
+    }
+    for name, table in inputs.items():
+        connection.register(name, table)
+    try:
+        return connection.sql(_statement(TEXT_LABEL_TABLE)).to_arrow_table()
+    finally:
+        for name in inputs:
+            connection.unregister(name)
 
 
 def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
