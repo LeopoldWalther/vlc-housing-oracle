@@ -1,6 +1,6 @@
 # The Silver task: a public image on Fargate (ARM64) in the default VPC, with a public IP for egress
 # instead of a NAT gateway, as the acquisition repository runs its tasks. It reads landing v3 and
-# writes Silver; nothing else in the account is reachable from its role.
+# reference data and writes Silver; nothing else in the account is reachable from its role.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -96,6 +96,13 @@ data "aws_iam_policy_document" "task" {
     resources = ["${local.bucket_arn}/landing/v3/*"]
   }
 
+  # Public reference data as immutable vintages (ADR 0004); the task never writes it.
+  statement {
+    sid       = "ReadReferenceV1"
+    actions   = ["s3:GetObject"]
+    resources = ["${local.bucket_arn}/reference/v1/*"]
+  }
+
   statement {
     sid       = "ReadWriteSilver"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
@@ -103,13 +110,13 @@ data "aws_iam_policy_document" "task" {
   }
 
   statement {
-    sid       = "ListOnlyLandingV3AndSilver"
+    sid       = "ListOnlyLandingV3ReferenceV1AndSilver"
     actions   = ["s3:ListBucket"]
     resources = [local.bucket_arn]
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["landing/v3/*", "silver/*"]
+      values   = ["landing/v3/*", "reference/v1/*", "silver/*"]
     }
   }
 
@@ -172,12 +179,16 @@ resource "aws_ecs_task_definition" "silver" {
       name      = "silver"
       image     = var.silver_image
       essential = true
-      command = [
-        "--landing", "s3://${var.lake_bucket}/landing/v3",
-        "--catalog", "silver",
-        "--mode", "incremental",
-        "--metrics",
-      ]
+      # Without a vintage the command is the one of before, and no listing_location is written.
+      command = concat(
+        [
+          "--landing", "s3://${var.lake_bucket}/landing/v3",
+          "--catalog", "silver",
+          "--mode", "incremental",
+          "--metrics",
+        ],
+        var.census_sections == "" ? [] : ["--census-sections", var.census_sections],
+      )
       environment = [
         { name = "PYICEBERG_CATALOG__SILVER__TYPE", value = "glue" },
         { name = "PYICEBERG_CATALOG__SILVER__GLUE__REGION", value = var.region },

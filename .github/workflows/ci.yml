@@ -32,6 +32,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
+      # The location rule and the reference converter need it; nothing installs it at run time.
+      - name: Install the DuckDB spatial extension
+        run: python -c "import duckdb; duckdb.sql('INSTALL spatial')"
+
       # Every check runs even when an earlier one failed, so one push reports everything that is
       # wrong. `!cancelled()` rather than `always()`, so stopping a run actually stops it.
       - name: Unit tests

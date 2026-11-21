@@ -13,8 +13,10 @@ from unittest import mock
 
 from pyiceberg.catalog.sql import SqlCatalog
 
+from src.reference.census_sections import convert
 from src.silver.rebuild import DAY_TABLES, main
 from src.synthetic.landing import generate_landing_v3
+from src.synthetic.reference import PROVINCE, SYNTHETIC_CRS, write_census_archive
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -92,6 +94,21 @@ class TestSilverCli(unittest.TestCase):
         ):
             code = main(list(arguments), **clients)
         return code, output.getvalue()
+
+    def census_sections(self) -> str:
+        """A converted synthetic vintage directory."""
+        write_census_archive(self.root / "sections.zip")
+        directory = convert(
+            self.root / "sections.zip",
+            province=PROVINCE,
+            crs=SYNTHETIC_CRS,
+            vintage="2026-01-01",
+            source="https://example.org/sections.zip",
+            licence="invented",
+            retrieved="2026-03-20",
+            out=self.root / "reference",
+        )
+        return str(directory)
 
     def walk_file_with_rows(self) -> Path:
         for commit in sorted((self.landing / "_commits").glob("*.json")):
@@ -227,6 +244,67 @@ class TestSilverCli(unittest.TestCase):
 
         self.assertEqual(1, code)
         self.assertEqual(self.runs, cloudwatch.published[0]["MetricData"][0]["Value"])
+
+    def test_a_run_given_census_sections_prints_the_location_snapshot_after_the_labels(
+        self,
+    ) -> None:
+        code, output = self.run_main(
+            "--landing",
+            str(self.landing),
+            "--catalog",
+            "test",
+            "--census-sections",
+            self.census_sections(),
+        )
+
+        self.assertEqual(0, code)
+        lines = output.splitlines()
+        located = [line for line in lines if line.startswith("listing_location:")]
+        self.assertEqual(1, len(located))
+        self.assertRegex(located[0], r"^listing_location: snapshot \d+$")
+        position = lines.index(located[0])
+        self.assertRegex(lines[position - 1], r"^listing_feature_label: snapshot \d+$")
+        self.assertRegex(lines[position + 1], r"^unknown feature patterns: \d+$")
+
+    def test_a_run_without_census_sections_prints_no_location_line(self) -> None:
+        code, output = self.run_main("--landing", str(self.landing), "--catalog", "test")
+
+        self.assertEqual(0, code)
+        self.assertNotIn("listing_location", output)
+
+    def test_a_missing_census_sections_directory_exits_1_naming_the_path(self) -> None:
+        missing = str(self.root / "reference" / "no-such-vintage")
+
+        completed = self.run_cli(
+            "--landing", str(self.landing), "--catalog", "test", "--census-sections", missing
+        )
+
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertIn(missing, completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_a_run_refused_for_its_census_sections_publishes_its_pending_runs(self) -> None:
+        cloudwatch = FakeCloudWatch()
+
+        code, _ = self.run_main(
+            "--landing",
+            str(self.landing),
+            "--catalog",
+            "test",
+            "--census-sections",
+            str(self.root / "reference" / "no-such-vintage"),
+            "--metrics",
+            cloudwatch_client=cloudwatch,
+        )
+
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [[("PendingRuns", self.runs)]],
+            [
+                [(d["MetricName"], d["Value"]) for d in call["MetricData"]]
+                for call in cloudwatch.published
+            ],
+        )
 
 
 if __name__ == "__main__":

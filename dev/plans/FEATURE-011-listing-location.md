@@ -1,7 +1,7 @@
 # FEATURE-011 — Listing location from coordinates: municipality, district and census section
 
-**Status:** 🔵 Planned · **Effort:** M (~11h) · **Priority:** Medium
-**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-16
+**Status:** 🟢 Complete · **Effort:** M (~11h) · **Priority:** Medium
+**Branch root:** `feature/listing-location` · **Created:** 2026-11-16 · **Updated:** 2026-11-19
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-011.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-011-technical-plan.yaml`.
@@ -125,35 +125,35 @@ population, reference rents) are published.
 
 ### Phase 1 — Reference data
 
-- [ ] **1.1 ADR 0004 and the licence.** Record the decision, the layout and the file's licence
+- [x] **1.1 ADR 0004 and the licence.** Record the decision, the layout and the file's licence
     and attribution. Validation: workflow check; the licence text is quoted in the ADR.
-- [ ] **1.2 Synthetic polygons and the test environment.** RED: `src/synthetic/reference.py`
+- [x] **1.2 Synthetic polygons and the test environment.** RED: `src/synthetic/reference.py`
     writes a small archive with one shapefile of squares around the synthetic coordinates in a
     projected system. Fails because the generator does not exist. CI and the README install
     DuckDB's spatial extension, which these tests need (review M1).
-- [ ] **1.3 Converter.** RED: converting the synthetic archive writes the six columns in
+- [x] **1.3 Converter.** RED: converting the synthetic archive writes the six columns in
     WGS84, keeps only the requested province, and writes a manifest with the archive's hash;
     an existing vintage, an archive without exactly one shapefile and a missing field are
     refused. Fails because the command does not exist.
 
 ### Phase 2 — The table
 
-- [ ] **2.1 The rule.** RED: a listing inside a square gets its three codes; one without
+- [x] **2.1 The rule.** RED: a listing inside a square gets its three codes; one without
     coordinates and one outside every square get nulls; one inside two overlapping squares gets
     the smaller code; every listing with a detail record has one row.
-- [ ] **2.2 Pipeline.** RED: a run with the argument writes the table and reports its snapshot;
+- [x] **2.2 Pipeline.** RED: a run with the argument writes the table and reports its snapshot;
     a run without it writes none; stepwise commits equal a backfill; a second vintage changes
     `reference_vintage`; an unreadable file fails the run before any write.
 
 ### Phase 3 — Operation
 
-- [ ] **3.1 Image.** The spatial extension is installed at build time, and the build loads it
+- [x] **3.1 Image.** The spatial extension is installed at build time, and the build loads it
     once as the job's user, so a missing extension fails the build.
-- [ ] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
+- [x] **3.2 Infrastructure.** Read access to `reference/v1/*` for the task role and the new
     argument from a variable; `terraform validate` and a plan that changes only the task role
     policy and the task definition.
-- [ ] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.
-- [ ] **3.4 First vintage and first run (operator, with approval).** Convert and upload the 2026
+- [x] **3.3 Documentation.** The runbook: yearly procedure, the table and its reading.
+- [x] **3.4 First vintage and first run (operator, with approval).** Convert and upload the 2026
     edition, deploy, then counts only: listings with a section, listings whose portal
     municipality differs from the polygon's, sections and districts in use. Recorded in
     `dev/plans/implementations/FEATURE-011-listing-location.md`.
@@ -210,15 +210,15 @@ population, reference rents) are published.
 
 ## Success criteria
 
-- [ ] ADR 0004 is accepted and names the licence.
-- [ ] Every listing with a detail record has one row; a listing with coordinates inside the
+- [x] ADR 0004 is accepted and names the licence.
+- [x] Every listing with a detail record has one row; a listing with coordinates inside the
     province has its three codes.
-- [ ] A run without the argument behaves as today.
-- [ ] Any sequence of commits and a backfill give the same rows for one vintage.
-- [ ] Every behavior was implemented test-first and focused plus affected suites pass
-- [ ] Configured lint, format, leak, infrastructure and workflow checks pass
-- [ ] The yearly procedure and the table are documented
-- [ ] No speculative scope, secrets, personal data, or generated clutter is introduced
+- [x] A run without the argument behaves as today.
+- [x] Any sequence of commits and a backfill give the same rows for one vintage.
+- [x] Every behavior was implemented test-first and focused plus affected suites pass
+- [x] Configured lint, format, leak, infrastructure and workflow checks pass
+- [x] The yearly procedure and the table are documented
+- [x] No speculative scope, secrets, personal data, or generated clutter is introduced
 
 ## Open questions & risks
 
@@ -240,3 +240,16 @@ population, reference rents) are published.
     of the file and the file is checked before the first write; the axis order and the border
     rule. The review measured the join on real coordinates. The user confirmed the census
     section as the first geography.
+- **2026-11-18** — Tasks 1.1 to 3.3 implemented on `feature/listing-location/integration`.
+    The legal notice was read: CC BY 4.0 with attribution, quoted in ADR 0004; the download
+    page's footer names CC BY-SA 4.0 in one place, recorded there. The converter was run once
+    on the 2026 edition outside the repository and wrote the expected 1,841 sections; the join
+    of 23,000 random points with that vintage took 0.2 s. The image was built for ARM64 and
+    loads the spatial extension without network. Task 3.4 (upload, deployment, first run)
+    waits for the final PR and for approval.
+- **2026-11-19** — Task 3.4: the 2026 vintage (1,841 sections) was uploaded and the image of
+    merge commit `09be771` deployed. The acquisition side's gate rests until 2026-11-22, so the
+    first run was a manual backfill with the user's approval, not the next commit as planned.
+    It wrote `listing_location` with 23,159 rows, 22,961 of them with a section; every count
+    equals the review's. See the
+    [implementation note](implementations/FEATURE-011-listing-location.md). Feature complete.

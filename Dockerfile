@@ -19,10 +19,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 RUN useradd --create-home --uid 10001 silver
 
-# DuckDB reads landing from S3 through httpfs and the AWS credential chain. Installing both
-# extensions here, as the user that runs the job, means a run never downloads one.
+# DuckDB reads landing from S3 through httpfs and the AWS credential chain, and assigns listings
+# to census sections with spatial. Installing the three extensions here, as the user that runs
+# the job, means a run never downloads one. Loading spatial once makes a missing or unloadable
+# build of it fail here and not in the first run that is given census sections.
 USER silver
-RUN python -c "import duckdb; duckdb.sql('INSTALL httpfs'); duckdb.sql('INSTALL aws')"
+RUN python -c "import duckdb; duckdb.sql('INSTALL httpfs'); duckdb.sql('INSTALL aws'); duckdb.sql('INSTALL spatial'); duckdb.sql('LOAD spatial')"
 USER root
 
 COPY src/ ./src/

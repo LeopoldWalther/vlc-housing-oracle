@@ -15,12 +15,12 @@ one.
 
 ```bash
 python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --catalog <name> \
-    [--mode incremental|backfill] [--metrics]
+    [--mode incremental|backfill] [--metrics] [--census-sections <vintage-directory>]
 ```
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six, then records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six. Given `--census-sections`, it also recomputes `listing_location` from Silver's whole `listing` and the vintage's polygons and replaces it. Then it records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -28,6 +28,11 @@ the CloudWatch namespace `vlc-housing-silver`; the AWS task always passes it. A 
 processed something publishes `UnknownFeaturePatterns` in the same call: the feature wordings of
 Silver that are not in the registry. A run with nothing pending computed nothing and publishes
 `PendingRuns` alone.
+
+`--census-sections` names one vintage directory of the census sections, local or `s3://`
+([Reference data](#reference-data)). A run given it also writes `listing_location`; a run without
+it neither reads reference data nor writes that table, and needs no spatial extension. The AWS
+task passes it when the variable `census_sections` is set.
 
 A run prints, for example:
 
@@ -46,13 +51,16 @@ listing_property_group: snapshot <snapshot-id>
 listing_price: snapshot <snapshot-id>
 feature_pattern: snapshot <snapshot-id>
 listing_feature_label: snapshot <snapshot-id>
+listing_location: snapshot <snapshot-id>
 unknown feature patterns: 0
 ```
+
+The `listing_location` line appears only for a run given `--census-sections`.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Every table and the ingest log committed, or nothing was pending. |
-| 1 | Refused: landing breaks the contract (`LandingContractError`), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet). The message names a table, a run and a count, never a value. |
+| 1 | Refused: landing breaks the contract (`LandingContractError`), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet), or the census-section vintage cannot be read or fails its check (`ReferenceDataError`). The message names a table, a run and a count, or the vintage's path and its defect, never a value. |
 | 2 | Usage error, for example a `--landing` path that is not a directory. |
 
 The first run into new, empty tables also prints PyIceberg's `UserWarning: Delete operation did
@@ -99,12 +107,18 @@ For every run it reads, before computing anything:
 Every Arrow table is computed before the first commit, so a refused run writes nothing and stays
 pending.
 
+A run given `--census-sections` checks the vintage before its first write as well: `part-0.parquet`
+in the directory is readable, has the six columns of a vintage and at least one row, and every
+row carries the same vintage. Otherwise the run is refused with the path in the message, writes
+nothing and stays pending.
+
 ## The tables
 
 All live in the namespace `vlc_housing_silver`. Every row carries `source` and
 `transformation_version = 'silver-v1'`; all instants are UTC and money is integer euros. A
 listing seen on one day by several runs keeps its newest sighting, ordered by the run's
 `run_started_at` (never by the `run_id` string), and every row keeps the `run_id` it came from.
+`listing_location` exists only where a run was given `--census-sections`.
 
 | Table | Partition | One row per | Notes |
 | --- | --- | --- | --- |
@@ -119,6 +133,7 @@ listing seen on one day by several runs keeps its newest sighting, ordered by th
 | `listing_property_group` | — | listing with a detail record | The `property_group_id` of the listings that are certainly the same property under rule `pg1`, with the group's size and completeness. An inferred label; no listing is dropped. See below. |
 | `listing_event` | — | inferred event of a listing | `event_type` is `disappeared` or `reappeared`, with `event_date`, `area`, `run_id` and `last_seen_date`. See below. |
 | `listing_price` | — | listing and price period | The prices a listing was seen at, in order, with the first and last sighting of each, the observed and the declared previous price, and `is_current` on the last period. See below. |
+| `listing_location` | — | listing with a detail record | The census section, district and municipality the listing's coordinates lie in, as the statistics office codes them, with the `reference_vintage` of the boundaries. Null codes without coordinates or outside every polygon. An inferred label. See below. |
 | `landing_ingest` | — | processed run | `run_id`, `run_started_at`, `outcome`, `is_replay`, `commit_written_at`, `ingested_at`, `transformation_version`. Written last, upserted by `run_id`: it is the checkpoint. |
 
 ### `listing_quality`
@@ -340,6 +355,109 @@ Three labels that the features state and no column of `listing` holds. The rule 
   replaced whole in every run that processes something, in both modes: a run can change any
   listing's features and with them the counts of any wording.
 
+### `listing_location`
+
+Where a listing lies in the official geography: its census section, and with the section its
+district and municipality. The portal names a municipality and, inside the city only, a district
+and a neighbourhood; these codes exist for every located listing and are the keys under which
+public statistics are published. The rule is `src/silver/sql/listing_location.sql`; the polygons
+are one vintage of the [reference data](#reference-data). Join the table to `listing` on `source`
+and `source_listing_id`.
+
+- **The rule.** A listing belongs to the polygon its point lies in or on the border of. Of
+  several such polygons the one with the smallest section code is taken, and all three codes
+  come from that one polygon, so every listing has exactly one row.
+- **Longitude is x.** The polygons are stored in EPSG:4326 with longitude before latitude, and a
+  listing's point is built as (longitude, latitude). Swapped axes would give null codes for
+  every listing and no error, which is why the tests use rectangles that are wider than high.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `source`, `source_listing_id` | `VARCHAR` | The listing |
+| `municipality_code` | `VARCHAR` | 5 digits: province and municipality; null without coordinates or outside every polygon |
+| `district_code` | `VARCHAR` | 7 digits: the municipality code and the district; null as `municipality_code` |
+| `section_code` | `VARCHAR` | 10 digits: the district code and the section; null as `municipality_code` |
+| `reference_vintage` | `VARCHAR` | The vintage of the boundaries the row was derived from; never null |
+| `transformation_version` | `VARCHAR` | As in every Silver table |
+
+- **The coordinate is approximate.** The portal places a listing near its address, not on it, so
+  a listing can fall into a neighbouring section. Sections are small; statistics by district or
+  municipality are safer than by section.
+- **Null codes mean no evidence:** the listing has no coordinates, or its point lies outside
+  every polygon of the vintage, which holds one province. They do not mean "outside the
+  province".
+- **The codes are the statistics office's.** They join its public tables by section, district or
+  municipality. `municipality_code` can differ from what `listing.municipality` suggests: that
+  column is the portal's name for the area the listing was found in.
+- **`reference_vintage` names the input.** Boundaries change every year. A new vintage changes
+  rows without a new `transformation_version`: the input changed, not the rule.
+- The table is recomputed from Silver's whole `listing` and replaced whole in every run that
+  processes something and is given `--census-sections`, in both modes. It is created by the
+  first such run; no backfill is needed. A run without the argument leaves an existing table
+  as it is, so the table goes stale while the argument is missing.
+
+## Reference data
+
+Public data that Silver reads beside landing lives in the lake as immutable vintages
+([ADR 0004](adr/0004-reference-data.md)):
+
+```
+reference/v1/census_sections/vintage=<date>/part-0.parquet
+reference/v1/census_sections/vintage=<date>/_manifest.json
+```
+
+The census sections are published once a year by the national statistics office (INE) as one
+shapefile of the whole country. Nothing in this repository downloads it, and the file never
+enters the repository. Once a year, when a new edition is out:
+
+1. **Read the licence again.** ADR 0004 quotes the legal notice as it was read for the first
+    vintage. If its terms changed, stop and record the new ones first.
+2. **Download** the edition's zip archive from the statistics office's page of the digitised
+    census sections. Note the address and the edition's reference date (1 January of its year).
+    The projection is named in the archive's `.prj` file; the editions so far use ETRS89 / UTM
+    zone 30N, `EPSG:25830`.
+3. **Convert** one province into a vintage directory. The command needs DuckDB's spatial
+    extension (see the README's Development section) and no network:
+
+    ```bash
+    python -m src.reference.census_sections \
+        --archive <downloaded.zip> \
+        --province 46 \
+        --crs EPSG:25830 \
+        --vintage <edition date, like 2026-01-01> \
+        --source <the address the archive was downloaded from> \
+        --licence "CC BY 4.0. Elaboración propia con datos extraídos del sitio web del INE: www.ine.es" \
+        --retrieved <the day of the download> \
+        --out <local directory>
+    ```
+
+    It prints the number of sections written (1,841 for province 46 in the 2026 edition) and
+    refuses, with exit code 2 and the cause: an existing vintage directory, an archive without
+    exactly one shapefile, a shapefile that lacks a field, a province without a section, and a
+    section code that occurs twice. Check `_manifest.json`: it holds the source, the licence, the
+    SHA-256 of the archive and the row count.
+4. **Upload** the two files. A vintage is written once; `--if-none-match '*'` makes the storage
+    refuse an overwrite:
+
+    ```bash
+    for file in part-0.parquet _manifest.json; do
+        aws s3api put-object --if-none-match '*' \
+            --bucket <lake-bucket> \
+            --key "reference/v1/census_sections/vintage=<date>/$file" \
+            --body "<local directory>/census_sections/vintage=<date>/$file"
+    done
+    ```
+
+5. **Point the task at it:** set `census_sections` to
+    `s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>` in the git-ignored tfvars,
+    plan and apply. Only the task definition changes. The next run that processes something
+    replaces `listing_location` whole with the new vintage on every row; the old vintage stays
+    in the lake.
+
+**Attribution.** Every published result that rests on these boundaries carries the line the
+licence asks for: *Elaboración propia con datos extraídos del sitio web del INE: www.ine.es*, with
+the edition's date.
+
 ## Running in AWS
 
 `infra/silver/` defines everything; the account-specific values live in git-ignored `*.tfvars`.
@@ -371,14 +489,19 @@ daily 05:30 UTC Scheduler ─┘          │
     Silver by at most a day.
 - **Image.** GitHub Actions builds the image on every push to `main` and publishes
     `ghcr.io/<owner>/vlc-housing-oracle-silver:<sha>`. A new image runs only after `silver_image`
-    is set to its SHA tag and applied; `latest` is refused by validation.
+    is set to its SHA tag and applied; `latest` is refused by validation. DuckDB's extensions
+    (`httpfs`, `aws`, `spatial`) are installed when the image is built, so a run downloads none.
+- **Reference data.** The task's role may read `reference/v1/` of the lake bucket and cannot
+    write it; the operator uploads a vintage. Which vintage a run reads is the variable
+    `census_sections`.
 
 ### Settings
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `lake_bucket` | — | The private bucket holding landing and Silver. |
+| `lake_bucket` | — | The private bucket holding landing, reference data and Silver. |
 | `silver_image` | — | The image by commit SHA or digest. |
+| `census_sections` | `""` | The census-section vintage the task reads, `s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>`; empty passes no `--census-sections`, and the task writes no `listing_location`. |
 | `alert_email` | — | Receives failure mail; confirm the SNS subscription once. |
 | `trigger_enabled` | `false` | Whether a landing commit queues a run. |
 | `catch_up_enabled` | `false` | Whether the daily catch-up queues a run. |
@@ -417,11 +540,15 @@ SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$N \
 aws ecs run-task --cluster $N --task-definition $N --launch-type FARGATE \
     --started-by manual-backfill \
     --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
-    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics"]}]}'
+    --overrides '{"containerOverrides":[{"name":"silver","command":["--landing","s3://<lake-bucket>/landing/v3","--catalog","silver","--mode","backfill","--metrics","--census-sections","s3://<lake-bucket>/reference/v1/census_sections/vintage=<date>"]}]}'
 
 # when the task stopped with exit code 0:
 aws lambda update-event-source-mapping --uuid "$UUID" --enabled
 ```
+
+The override replaces the task definition's whole command, so it names every argument the
+scheduled runs get. Leave the last two out only while `census_sections` is not set: a backfill
+without them rewrites every other table and leaves `listing_location` as it was.
 
 Messages queued meanwhile stay in the queue and run once the mapping is enabled again.
 

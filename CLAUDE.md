@@ -39,18 +39,21 @@ Keep dependencies directed through these boundaries:
 1. **Landing** (input, owned elsewhere): Parquet tables under `landing/v<n>/` whose schema is
      `contracts/landing/v<n>/schema.json`. This repository reads landing and never writes it.
      Silver follows landing v3; v1 is retired and kept only as a contract.
-2. **Silver** validates, deduplicates, and historizes listings as **Apache Iceberg** tables,
+2. **Reference** (input, public data): immutable vintages under `reference/v1/<dataset>/`, each
+     with a manifest naming source and licence, converted by a command of this repository from a
+     file an operator downloads (see [ADR 0004](docs/adr/0004-reference-data.md)).
+3. **Silver** validates, deduplicates, and historizes listings as **Apache Iceberg** tables,
      maintained incrementally from landing by pure DuckDB transformations: landing announces
      every collection run with an immutable commit, Silver processes the commits its ingest log
      does not hold yet and replaces the days they touch; a full rebuild is a deliberate backfill
      (see [ADR 0001](docs/adr/0001-silver-on-iceberg.md) and
      [ADR 0003](docs/adr/0003-immutable-bronze-and-landing-per-run.md)).
-3. **Enrichment** (input, written by this repository): a language model's labels of the redacted
+4. **Enrichment** (input, written by this repository): a language model's labels of the redacted
      description, stored as immutable answers keyed by text hash and label version, which Silver
      joins like landing ([ADR 0005](docs/adr/0005-model-derived-labels.md)).
-4. **Gold** publishes use-case-specific features, aggregates, and training datasets as plain
+5. **Gold** publishes use-case-specific features, aggregates, and training datasets as plain
      Parquet, so a browser can read them over HTTP.
-5. **Consumers** (notebooks, models, a web front end) query curated data only.
+6. **Consumers** (notebooks, models, a web front end) query curated data only.
 
 Every derived record must be traceable to its source, listing identifier, observation time,
 ingestion time, and transformation version. A training dataset records the Silver snapshot it was
