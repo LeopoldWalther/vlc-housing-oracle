@@ -14,7 +14,9 @@ time-on-market, and market dynamics.
 > further table lists every feature wording with the column that carries it, so that a wording
 > nobody has read yet raises an alarm. A run that is given a vintage of the official census
 > sections writes a twelfth table, `listing_location`: the section, district and municipality of
-> every listing's coordinates.
+> every listing's coordinates. A run that is given the text labeller's stored answers writes a
+> thirteenth, `listing_text_label`: a sale's renovation state and whether it is an auction, as a
+> language model read them from the redacted description.
 > Gold and models are not built yet.
 
 ## Architecture
@@ -38,6 +40,10 @@ time-on-market, and market dynamics.
     the census sections. It is stored as immutable vintages with a manifest that names source
     and licence; a command of this repository converts a file that an operator downloads, and no
     code fetches it ([ADR 0004](docs/adr/0004-reference-data.md)).
+- **Enrichment** is the second input this repository writes itself: a labeller sends the
+    redacted sale descriptions to a Claude model as message batches and stores the answers
+    immutably, keyed by the text's hash and a label version, and Silver joins them into
+    `listing_text_label` like landing ([ADR 0005](docs/adr/0005-model-derived-labels.md)).
 - **Gold** is plain Parquet, readable by a browser over HTTP, and holds use-case-specific
     datasets. It has none yet; labels that describe a listing as such, like quality flags and
     property groups, live in Silver.

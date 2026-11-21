@@ -1113,7 +1113,7 @@ technical_plan:
         --text-labels beside --census-sections. listing_text_label joins "The tables" with the
         note that it exists only for a run given --text-labels. README.md: the status text and
         the architecture bullet name the enrichment input and the table.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["4.1"]
