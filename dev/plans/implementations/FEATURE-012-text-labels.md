@@ -241,3 +241,71 @@ Where the model and the evaluation labels differ under `tl2` (46 texts):
   value is still near the threshold.
 - The model is open as well (the user's decision of 2026-11-19: wait). Another model is a new
   `LABEL_VERSION` and a new run in any case, so the decision on `renovated` waits for it.
+
+## Task 1.6 — the gate through the Claude API, prompt `tl3` (2026-11-21)
+
+The amendment of 2026-11-20 moved the labeller to the Claude API (tasks 1.7 to 1.9) and the
+prompt to `tl3`, which names no tool. The key was created by the user in a dedicated Console
+workspace with a spend limit and reached each command only through its environment. The user
+set a budget of $100 a month for testing and up to $5 per run, and asked for Claude Sonnet 5.5
+first.
+
+### Stratum F extended
+
+30 more distinct descriptions of stratum F, drawn at random with a recorded seed from the texts
+not yet in the set and labelled under the definitions before any model read them, were added.
+They keep the stratum's population recorded on 2026-11-16, so all strata keep one reference.
+
+| | Before | After |
+|---|---|---|
+| Texts | 200 | 230 |
+| Stratum F | 35 | 65 |
+| Labelled `renovated` | 35 | 38 |
+| Labelled `needs_renovation` | 48 | 48 |
+| Labelled `is_auction` | 37 | 38 |
+
+A sampled text of stratum F now stands for 141 distinct texts instead of 261.
+
+### One batch of one text (review R3)
+
+One text of the set was sent as a batch of one request with `ClaudeApiBatches` and Claude
+Sonnet 5.5. The batch ended after 103 seconds; the request succeeded, its `custom_id` was the
+text's hash, and the answer was valid and equal to the set's label (2,373 input tokens, 22
+output tokens). The structured output, the `custom_id` and the organization's limits were
+accepted, so phase 2 can be built as planned.
+
+### Three runs per model
+
+All 230 answers were valid in every run. Weighted precision / weighted recall:
+
+| Value | Sonnet 5.5, run 1 | run 2 | run 3 | Haiku 5.5, run 1 | run 2 | run 3 |
+|---|---|---|---|---|---|---|
+| `renovated` | 1.00 / 0.97 | 1.00 / 0.94 | 1.00 / 0.97 | 1.00 / 0.88 | 1.00 / 0.91 | 1.00 / 0.91 |
+| `needs_renovation` | 1.00 / 0.89 | 1.00 / 0.89 | 1.00 / 0.89 | 0.99 / 0.90 | 0.99 / 0.89 | 0.99 / 0.90 |
+| `is_auction` | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 0.99 | 1.00 / 0.99 |
+| `renovation_state` agreement | 0.90 | 0.90 | 0.90 | 0.89 | 0.88 | 0.88 |
+
+Gate: every decisive value passes with both models in every run (precision ≥ 0.90, recall
+≥ 0.80). The spread between runs that left `tl2` undecided is gone: precision is 1.00 or 0.99
+throughout, and the extended stratum F no longer lets one text decide.
+
+### Tokens and cost
+
+| | Sonnet 5.5 | Haiku 5.5 |
+|---|---|---|
+| Input tokens per text | 1,706 | 1,706 |
+| Output tokens per text | 31 to 36 | 88 to 91 |
+| Cost of one run (direct requests) | about $0.86 | about $0.05 |
+| Per 1,000 texts in a batch (half price) | about $1.90 | about $0.11 |
+| Backlog, at least 15,639 sale descriptions | about $30 | about $1.70 |
+
+The runs of the day cost about $2.75 in all. A month of new texts costs about $0.11 per 1,000
+new descriptions with Haiku 5.5. The backlog counts the sale descriptions in the eight
+strata; texts outside them add to it in proportion.
+
+### Decision
+
+The user chose **Claude Haiku 5.5** (2026-11-21): it passes the gate at a twentieth of the
+price of Sonnet 5.5, whose only advantage is a higher recall of `renovated`. `tl3` is the
+prompt of `src/enrichment/prompt.py` with `claude-haiku-5-5`; a change of the prompt or the
+model from here on is a new `LABEL_VERSION` and a new evaluation.
