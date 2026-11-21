@@ -848,7 +848,7 @@ technical_plan:
           StoredAnswerError, BatchResultError and the missing key (message without a value); 2
           for usage. For an s3:// location the session reads through httpfs as the Silver
           command does.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 2.0
       depends_on: ["2.2"]

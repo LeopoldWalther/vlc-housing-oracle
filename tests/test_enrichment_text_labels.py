@@ -1,12 +1,20 @@
 """The labeller's state: the texts still to send, collecting ended batches, submitting pending ones."""
 
+import contextlib
 import hashlib
+import io
+import os
+import tempfile
 import unittest
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest import mock
 
 import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
+from pyiceberg.catalog.sql import SqlCatalog
 
 from src.enrichment.batches import BatchAnswer, BatchState
 from src.enrichment.labeler import LabelResult, TextLabel
@@ -21,9 +29,13 @@ from src.enrichment.text_labels import (
     SubmitReport,
     check_model,
     collect_batches,
+    main,
     pending_texts,
+    stored_answers,
     submit_pending,
 )
+from src.silver.rebuild import main as silver_main
+from src.synthetic.landing import generate_landing_v3
 
 
 def sha(description: str) -> str:
@@ -469,6 +481,305 @@ class CheckModelTest(unittest.TestCase):
         for case, stored_models in cases.items():
             with self.subTest(case=case):
                 check_model(stored_models, "model-a")
+
+
+class ScriptedBatches:
+    """Fake batches across runs: each submitted batch runs until ``end`` answers it."""
+
+    def __init__(self) -> None:
+        self.submitted: dict[str, list[tuple[str, str]]] = {}
+        self.ended_answers: dict[str, list[BatchAnswer]] = {}
+
+    def submit(self, texts: Sequence[tuple[str, str]]) -> str:
+        batch_id = f"msgbatch_{len(self.submitted) + 1:02d}"
+        self.submitted[batch_id] = list(texts)
+        return batch_id
+
+    def end(self, batch_id: str, outcome_of=lambda description: "succeeded") -> None:
+        answers = []
+        for text_sha256, description in self.submitted[batch_id]:
+            outcome = outcome_of(description)
+            result = LabelResult(TextLabel("original", False), 120, 12)
+            answers.append(
+                BatchAnswer(text_sha256, outcome, result if outcome == "succeeded" else None)
+            )
+        self.ended_answers[batch_id] = answers
+
+    def state(self, batch_id: str) -> BatchState:
+        if batch_id in self.ended_answers:
+            return BatchState(ended=True, ended_at=ENDED_AT, readable=True)
+        return RUNNING
+
+    def answers(self, batch_id: str) -> Iterator[BatchAnswer]:
+        return iter(self.ended_answers[batch_id])
+
+
+REPORT_LINES = (
+    "batches collected",
+    "batches open",
+    "labelled",
+    "invalid answers",
+    "errored requests",
+    "expired requests",
+    "input tokens",
+    "output tokens",
+    "pending",
+    "submitted",
+    "remaining",
+)
+
+
+class TextLabelCommandTest(unittest.TestCase):
+    """The command against a catalog backfilled once from the synthetic landing."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(cls.enterClassContext(tempfile.TemporaryDirectory()))
+        landing = cls.root / "landing" / "v3"
+        landing.mkdir(parents=True)
+        generate_landing_v3(landing, seed=1)
+        # PyIceberg reads its environment once, at import; both commands get one SQLite catalog.
+        catalog = SqlCatalog(
+            "test", uri=f"sqlite:///{cls.root}/catalog.db", warehouse=f"file://{cls.root}"
+        )
+        for target in (
+            "src.silver.rebuild.load_catalog",
+            "src.enrichment.text_labels.load_catalog",
+        ):
+            cls.enterClassContext(mock.patch(target, return_value=catalog))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = silver_main(
+                ["--landing", str(landing), "--catalog", "test", "--mode", "backfill"]
+            )
+        if code != 0:
+            raise RuntimeError(f"the Silver backfill of the fixture exited {code}")
+
+    def setUp(self) -> None:
+        run = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.labels = run / "labels"
+        self.batches_dir = run / "batches"
+        self.fake = ScriptedBatches()
+
+    def run_main(self, *extra: str, max_texts: int = 300, batches=None) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(
+                [
+                    "--catalog",
+                    "test",
+                    "--labels",
+                    str(self.labels),
+                    "--batches",
+                    str(self.batches_dir),
+                    "--model-id",
+                    "model-a",
+                    "--max-texts",
+                    str(max_texts),
+                    *extra,
+                ],
+                batches=self.fake if batches is None else batches,
+                now=lambda: NOW,
+            )
+        return code, out.getvalue(), err.getvalue()
+
+    def files(self) -> list[str]:
+        return sorted(
+            str(path.relative_to(path.parents[3]))
+            for directory in (self.labels, self.batches_dir)
+            if directory.exists()
+            for path in directory.rglob("*.parquet")
+        )
+
+    def report(self, output: str) -> dict[str, int]:
+        lines = [line.split(": ") for line in output.strip().splitlines()]
+        self.assertEqual(tuple(name for name, _ in lines), REPORT_LINES)
+        return {name: int(value) for name, value in lines}
+
+    def test_a_first_run_submits_every_distinct_text_and_writes_one_record(self) -> None:
+        code, output, _ = self.run_main()
+
+        self.assertEqual(code, 0)
+        ((batch_id, texts),) = self.fake.submitted.items()
+        self.assertEqual(len(texts), len({text_sha256 for text_sha256, _ in texts}))
+        self.assertGreaterEqual(len(texts), 2)
+        for text_sha256, description in texts:
+            self.assertEqual(text_sha256, sha(description))
+            self.assertTrue(description.strip())
+        self.assertEqual(
+            self.files(),
+            [f"batches/label_version={LABEL_VERSION}/batch={batch_id}/record.parquet"],
+        )
+        record_table = pq.read_table(
+            self.batches_dir
+            / f"label_version={LABEL_VERSION}"
+            / f"batch={batch_id}"
+            / "record.parquet"
+        )
+        self.assertEqual(record_table.schema, BATCH_RECORD_SCHEMA_ARROW)
+        self.assertEqual(record_table.num_rows, len(texts))
+        report = self.report(output)
+        self.assertEqual(
+            (
+                report["pending"],
+                report["submitted"],
+                report["remaining"],
+                report["batches collected"],
+            ),
+            (len(texts), len(texts), 0, 0),
+        )
+        for text_sha256, description in texts:
+            self.assertNotIn(text_sha256, output)
+            self.assertNotIn(description, output)
+
+    def test_a_run_while_the_batch_runs_does_nothing(self) -> None:
+        self.run_main()
+        before = self.files()
+
+        code, output, _ = self.run_main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fake.submitted), 1)
+        self.assertEqual(self.files(), before)
+        report = self.report(output)
+        self.assertEqual(
+            (report["batches open"], report["submitted"], report["pending"]), (1, 0, 0)
+        )
+
+    def test_a_run_after_the_end_writes_the_part_and_the_next_writes_nothing(self) -> None:
+        self.run_main()
+        ((batch_id, texts),) = self.fake.submitted.items()
+        self.fake.end(batch_id)
+
+        code, output, _ = self.run_main()
+
+        self.assertEqual(code, 0)
+        self.assertIn(
+            f"labels/label_version={LABEL_VERSION}/run={batch_id}/part-0.parquet", self.files()
+        )
+        self.assertEqual(len(self.fake.submitted), 1)
+        report = self.report(output)
+        self.assertEqual(
+            (report["batches collected"], report["labelled"], report["submitted"]),
+            (1, len(texts), 0),
+        )
+        stored = stored_answers(duckdb.connect(), str(self.labels))
+        self.assertEqual(stored.num_rows, len(texts))
+        before = self.files()
+
+        self.run_main()
+
+        self.assertEqual(self.files(), before)
+        self.assertEqual(len(self.fake.submitted), 1)
+
+    def test_an_errored_text_is_submitted_again_by_the_collecting_run(self) -> None:
+        self.run_main()
+        ((batch_id, texts),) = self.fake.submitted.items()
+        errored = texts[0][1]
+        self.fake.end(
+            batch_id, lambda description: "errored" if description == errored else "succeeded"
+        )
+
+        code, output, _ = self.run_main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(list(self.fake.submitted.values())[1], [texts[0]])
+        self.assertEqual(self.report(output)["errored requests"], 1)
+
+    def test_a_cap_leaves_the_rest_for_the_next_run(self) -> None:
+        code, output, _ = self.run_main(max_texts=1)
+        first = self.report(output)
+
+        self.run_main(max_texts=300)
+
+        self.assertEqual(code, 0)
+        self.assertEqual((first["submitted"], first["remaining"]), (1, first["pending"] - 1))
+        first_batch, second_batch = self.fake.submitted.values()
+        self.assertEqual(len(second_batch), first["pending"] - 1)
+        self.assertFalse({h for h, _ in first_batch} & {h for h, _ in second_batch})
+
+    def test_a_collected_batch_without_a_succeeded_request_exits_1_after_its_work(self) -> None:
+        self.run_main()
+        ((batch_id, texts),) = self.fake.submitted.items()
+        self.fake.end(batch_id, lambda description: "errored")
+
+        code, output, error = self.run_main()
+
+        self.assertEqual(code, 1)
+        self.assertIn("a collected batch had no succeeded request", error)
+        self.assertIn(
+            f"labels/label_version={LABEL_VERSION}/run={batch_id}/part-0.parquet", self.files()
+        )
+        self.assertEqual(len(self.fake.submitted[list(self.fake.submitted)[1]]), len(texts))
+        self.assertEqual(self.report(output)["submitted"], len(texts))
+
+    def test_stored_answers_of_nothing_is_an_empty_table_with_the_schema(self) -> None:
+        connection = duckdb.connect()
+        for location in (self.labels, self.labels.parent / "empty"):
+            with self.subTest(location=location.name):
+                location.parent.mkdir(parents=True, exist_ok=True)
+                if location.name == "empty":
+                    location.mkdir()
+                stored = stored_answers(connection, str(location))
+                self.assertEqual((stored.num_rows, stored.schema), (0, ANSWER_SCHEMA_ARROW))
+
+    def test_a_part_without_a_column_exits_1_naming_the_part_and_the_column(self) -> None:
+        part = self.labels / f"label_version={LABEL_VERSION}" / "run=msgbatch_x" / "part-0.parquet"
+        part.parent.mkdir(parents=True)
+        pq.write_table(ANSWER_SCHEMA_ARROW.empty_table().drop_columns(["model_id"]), part)
+
+        code, _, error = self.run_main()
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"label_version={LABEL_VERSION}/run=msgbatch_x/part-0.parquet", error)
+        self.assertIn("model_id", error)
+        self.assertEqual(self.fake.submitted, {})
+
+    def test_answers_of_another_model_under_the_version_exit_1_and_change_nothing(self) -> None:
+        part = self.labels / f"label_version={LABEL_VERSION}" / "run=msgbatch_x" / "part-0.parquet"
+        part.parent.mkdir(parents=True)
+        row = {
+            "text_sha256": sha("x"),
+            "label_version": LABEL_VERSION,
+            "model_id": "model-old",
+            "renovation_state": "original",
+            "is_auction": False,
+            "labeled_at": ENDED_AT,
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+        pq.write_table(pa.Table.from_pylist([row], schema=ANSWER_SCHEMA_ARROW), part)
+        before = self.files()
+
+        code, _, error = self.run_main()
+
+        self.assertEqual(code, 1)
+        self.assertIn("model-old", error)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.fake.submitted, {})
+
+    def test_without_injected_batches_and_without_the_key_the_command_exits_1(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            del os.environ["ANTHROPIC_API_KEY"]
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(
+                    [
+                        "--catalog",
+                        "test",
+                        "--labels",
+                        str(self.labels),
+                        "--batches",
+                        str(self.batches_dir),
+                        "--model-id",
+                        "model-a",
+                        "--max-texts",
+                        "5",
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("ANTHROPIC_API_KEY", err.getvalue())
+        self.assertEqual(self.files(), [])
 
 
 if __name__ == "__main__":
