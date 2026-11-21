@@ -1,4 +1,5 @@
-# Failure mail: a Silver task that stopped badly, a dead-lettered start, or runs left pending.
+# Failure mail: a Silver or labeller task that stopped badly, a dead-lettered start, or runs left
+# pending.
 
 resource "aws_sns_topic" "alerts" {
   name = "${local.name}-alerts"
@@ -51,7 +52,7 @@ resource "aws_sns_topic_policy" "alerts" {
 # that stopped for any reason other than its container exiting (it never started).
 resource "aws_cloudwatch_event_rule" "task_failed" {
   name        = "${local.name}-task-failed"
-  description = "A Silver task stopped without succeeding."
+  description = "A Silver or text labeller task stopped without succeeding."
 
   event_pattern = jsonencode({
     source      = ["aws.ecs"]
@@ -83,7 +84,7 @@ resource "aws_cloudwatch_event_target" "task_failed" {
     }
     # A JSON string, built by hand: jsonencode would escape the <placeholders>.
     input_template = "\"${join("\\n", [
-      "A Silver task failed.",
+      "A task on the Silver cluster failed: the Silver task or the text labeller.",
       "",
       "Task: <task>",
       "Started by: <started_by>",
@@ -91,9 +92,9 @@ resource "aws_cloudwatch_event_target" "task_failed" {
       "Exit code: <exit_code>",
       "Reason: <reason>",
       "",
-      "Exit codes: 1 = landing or a table schema was refused (the log names the table and run); 137 = out of memory; 139 = the process crashed; none = the container never started.",
-      "Log: CloudWatch log group ${aws_cloudwatch_log_group.silver.name}, stream silver/silver/ plus the last part of the task ARN.",
-      "The queue retries the run up to three times; after that the dead-letter alarm follows. Runbook: docs/silver-rebuild.md.",
+      "Exit codes: 1 = Silver: landing, a table schema, the census sections or a stored answer was refused (the log names it); labeller: a stored answer, the model of the label version or the API key was refused, or a collected batch had no succeeded request (the API credit is used up, the key is revoked or the model is refused); 137 = out of memory; 139 = the process crashed; none = the container never started.",
+      "Log: CloudWatch log group ${aws_cloudwatch_log_group.silver.name}, stream silver/silver/ or labeller/labeller/ plus the last part of the task ARN.",
+      "Only the Silver task is retried, by its queue, up to three times; after that the dead-letter alarm follows. A failed labeller is not retried: the next succeeded Silver task starts it again. Runbook: docs/silver-rebuild.md.",
     ])}\""
   }
 }

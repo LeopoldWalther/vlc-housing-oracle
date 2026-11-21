@@ -1057,7 +1057,7 @@ technical_plan:
         only the Silver task is retried by the queue, and that the labeller's exit code 1 also
         means a batch without a succeeded request (the credit, the key or the model).
         Nothing is applied in this task.
-      status: "not_started"
+      status: "done"
       complexity: "high"
       estimated_hours: 2.5
       depends_on: ["3.2"]
