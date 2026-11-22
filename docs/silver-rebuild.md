@@ -450,11 +450,12 @@ an auction. The exact prompt is `src/enrichment/prompt.py`.
 
 - A label is the model's reading of the description under one `label_version`, not a fact about
   the home: a description can be wrong, silent or advertising.
-- For `tl3` (Claude Haiku 5.5) the evaluation on 230 hand-labelled sale descriptions, weighted
-  by stratum, measured in three runs a precision of 0.99 to 1.00 for `renovated`,
-  `needs_renovation` and `is_auction`, and a recall of 0.88 to 0.91 for `renovated`, 0.89 to 0.90
-  for `needs_renovation` and 0.99 to 1.00 for `is_auction`. The labels behind it are one reader's;
-  the sample is small, so read these as a few points either way
+- For `tl3` (Claude Haiku 5.5) the evaluation on 230 sale descriptions, labelled by a larger
+  language model under the same definitions and weighted by stratum, measured in three runs a
+  precision of 0.99 to 1.00 for `renovated`, `needs_renovation` and `is_auction`, and a recall
+  of 0.88 to 0.91 for `renovated`, 0.89 to 0.90 for `needs_renovation` and 0.99 to 1.00 for
+  `is_auction`. No human labelled the set, so the figures say how closely the small model
+  follows the large one; the sample is small, so read them as a few points either way
   (`dev/plans/implementations/FEATURE-012-text-labels.md`).
 - A missed `renovated` most often reads as `original`. `unknown` and `original` are the least
   separable values.
