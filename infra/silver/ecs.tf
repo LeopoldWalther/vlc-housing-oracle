@@ -1,6 +1,7 @@
 # The Silver task: a public image on Fargate (ARM64) in the default VPC, with a public IP for egress
 # instead of a NAT gateway, as the acquisition repository runs its tasks. It reads landing v3 and
-# reference data and writes Silver; nothing else in the account is reachable from its role.
+# reference data and the text labeller's stored answers and writes Silver; nothing else in the
+# account is reachable from its role.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -103,6 +104,13 @@ data "aws_iam_policy_document" "task" {
     resources = ["${local.bucket_arn}/reference/v1/*"]
   }
 
+  # The text labeller's stored answers (ADR 0005), joined like landing; the labeller writes them.
+  statement {
+    sid       = "ReadTextLabelAnswers"
+    actions   = ["s3:GetObject"]
+    resources = ["${local.bucket_arn}/enrichment/v1/text_label/*"]
+  }
+
   statement {
     sid       = "ReadWriteSilver"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
@@ -110,13 +118,13 @@ data "aws_iam_policy_document" "task" {
   }
 
   statement {
-    sid       = "ListOnlyLandingV3ReferenceV1AndSilver"
+    sid       = "ListOnlyLandingV3ReferenceV1AnswersAndSilver"
     actions   = ["s3:ListBucket"]
     resources = [local.bucket_arn]
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["landing/v3/*", "reference/v1/*", "silver/*"]
+      values   = ["landing/v3/*", "reference/v1/*", "enrichment/v1/text_label/*", "silver/*"]
     }
   }
 
@@ -179,13 +187,15 @@ resource "aws_ecs_task_definition" "silver" {
       name      = "silver"
       image     = var.silver_image
       essential = true
-      # Without a vintage the command is the one of before, and no listing_location is written.
+      # Without a vintage no listing_location is written. listing_text_label is written from the
+      # stored answers, with null labels while there are none.
       command = concat(
         [
           "--landing", "s3://${var.lake_bucket}/landing/v3",
           "--catalog", "silver",
           "--mode", "incremental",
           "--metrics",
+          "--text-labels", "s3://${var.lake_bucket}/enrichment/v1/text_label",
         ],
         var.census_sections == "" ? [] : ["--census-sections", var.census_sections],
       )

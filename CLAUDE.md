@@ -48,9 +48,12 @@ Keep dependencies directed through these boundaries:
      does not hold yet and replaces the days they touch; a full rebuild is a deliberate backfill
      (see [ADR 0001](docs/adr/0001-silver-on-iceberg.md) and
      [ADR 0003](docs/adr/0003-immutable-bronze-and-landing-per-run.md)).
-4. **Gold** publishes use-case-specific features, aggregates, and training datasets as plain
+4. **Enrichment** (input, written by this repository): a language model's labels of the redacted
+     description, stored as immutable answers keyed by text hash and label version, which Silver
+     joins like landing ([ADR 0005](docs/adr/0005-model-derived-labels.md)).
+5. **Gold** publishes use-case-specific features, aggregates, and training datasets as plain
      Parquet, so a browser can read them over HTTP.
-5. **Consumers** (notebooks, models, a web front end) query curated data only.
+6. **Consumers** (notebooks, models, a web front end) query curated data only.
 
 Every derived record must be traceable to its source, listing identifier, observation time,
 ingestion time, and transformation version. A training dataset records the Silver snapshot it was

@@ -64,3 +64,40 @@ variable "consumer_reserved_concurrency" {
   default     = 1
   nullable    = true
 }
+
+variable "label_model_id" {
+  description = "The Claude API model of the text labeller's label version (ADR 0005), for example claude-haiku-5-5. Set it in terraform.tfvars, which git ignores."
+  type        = string
+
+  validation {
+    condition     = length(var.label_model_id) > 0
+    error_message = "label_model_id must name the model of the current label version."
+  }
+}
+
+variable "label_api_key_parameter" {
+  description = "Name of the Parameter Store SecureString that holds the Claude API key, created by hand. Terraform reads no value of it. Set it in terraform.tfvars, which git ignores."
+  type        = string
+
+  validation {
+    condition     = can(regex("^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$", var.label_api_key_parameter))
+    error_message = "label_api_key_parameter must be a parameter name starting with a slash."
+  }
+}
+
+variable "label_max_texts" {
+  description = "Most descriptions the labeller submits in one batch: the per-run cap on cost."
+  type        = number
+  default     = 2000
+
+  validation {
+    condition     = var.label_max_texts >= 1 && var.label_max_texts <= 100000
+    error_message = "label_max_texts must be between 1 and the batch limit of 100000."
+  }
+}
+
+variable "labeller_enabled" {
+  description = "Whether a succeeded Silver task starts the text labeller. Off until the first batch of one text is checked."
+  type        = bool
+  default     = false
+}

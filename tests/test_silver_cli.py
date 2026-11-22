@@ -272,6 +272,29 @@ class TestSilverCli(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertNotIn("listing_location", output)
 
+    def test_a_run_given_text_labels_prints_the_table_snapshot_after_the_labels(self) -> None:
+        labels = self.root / "labels"
+        labels.mkdir()
+
+        code, output = self.run_main(
+            "--landing", str(self.landing), "--catalog", "test", "--text-labels", str(labels)
+        )
+
+        self.assertEqual(0, code)
+        lines = output.splitlines()
+        written = [line for line in lines if line.startswith("listing_text_label:")]
+        self.assertEqual(1, len(written))
+        self.assertRegex(written[0], r"^listing_text_label: snapshot \d+$")
+        position = lines.index(written[0])
+        self.assertRegex(lines[position - 1], r"^listing_feature_label: snapshot \d+$")
+        self.assertRegex(lines[position + 1], r"^unknown feature patterns: \d+$")
+
+    def test_a_run_without_text_labels_prints_no_text_label_line(self) -> None:
+        code, output = self.run_main("--landing", str(self.landing), "--catalog", "test")
+
+        self.assertEqual(0, code)
+        self.assertNotIn("listing_text_label", output)
+
     def test_a_missing_census_sections_directory_exits_1_naming_the_path(self) -> None:
         missing = str(self.root / "reference" / "no-such-vintage")
 

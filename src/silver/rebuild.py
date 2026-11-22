@@ -22,6 +22,8 @@ from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.expressions import In
 
 from src.contracts import landing_v3_sha256
+from src.enrichment.prompt import LABEL_VERSION
+from src.enrichment.text_labels import StoredAnswerError, stored_answers
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
@@ -93,6 +95,14 @@ LOCATION_LISTING_COLUMNS = (
     "latitude",
     "longitude",
 )
+
+# Written only by a run given the stored answers of the text labeller (ADR 0005), so it is no
+# member of SILVER_TABLES.
+TEXT_LABEL_TABLE = "listing_text_label"
+
+# The columns of Silver listing and listing_text that the listing_text_label rule reads.
+TEXT_LABEL_LISTING_COLUMNS = ("source", "source_listing_id", "operation")
+TEXT_LABEL_TEXT_COLUMNS = ("source", "source_listing_id", "description")
 
 # The columns of one census-section vintage (ADR 0004), in the file's order.
 CENSUS_SECTION_COLUMNS = (
@@ -206,6 +216,7 @@ def process_landing(
     list_commits: Callable[[], list[LandingCommit]],
     now: Callable[[], datetime],
     census_sections: str | None = None,
+    text_labels: str | None = None,
 ) -> ProcessResult:
     """Process the landing runs Silver has not ingested yet; ``backfill`` treats every run as new.
 
@@ -217,6 +228,10 @@ def process_landing(
     ``census_sections`` names one reference vintage directory. A run given it also writes
     ``listing_location``; the vintage is read and checked before the run's first write, so a
     ``ReferenceDataError`` leaves every table as it was and the runs pending.
+
+    ``text_labels`` names the labeller's stored answers, a directory or s3:// location. A run
+    given it also writes ``listing_text_label``; the answers are read before the run's first
+    write, so a ``StoredAnswerError`` leaves every table as it was.
     """
     if mode not in ("incremental", "backfill"):
         raise ValueError(f"unknown mode {mode!r}")
@@ -229,6 +244,7 @@ def process_landing(
     sections = (
         None if census_sections is None else read_census_sections(connection, census_sections)
     )
+    answers = None if text_labels is None else stored_answers(connection, text_labels)
 
     known = {run_id: run.observed_dates for run_id, run in ingested.items()}
     known |= {commit.run_id: commit.observed_dates for commit in todo}
@@ -288,8 +304,9 @@ def process_landing(
     # property groups of listings it did not touch, and change any listing's features and with
     # them the counts of any wording, so these tables are recomputed and replaced whole; they
     # read Silver after this run's days and listings are written. So is listing_location, whose
-    # polygons can change with the vintage the run is given.
-    labels = _labels_from_silver(connection, catalog, sections)
+    # polygons can change with the vintage the run is given, and listing_text_label, whose
+    # answers can change with every labeller run.
+    labels = _labels_from_silver(connection, catalog, sections, answers)
     snapshot_ids |= write_silver_tables(
         catalog,
         NAMESPACE,
@@ -473,17 +490,30 @@ def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa
 
 
 def _labels_from_silver(
-    connection: duckdb.DuckDBPyConnection, catalog: Catalog, sections: pa.Table | None
+    connection: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    sections: pa.Table | None,
+    answers: pa.Table | None = None,
 ) -> dict[str, pa.Table]:
     """The label tables over one read of Silver's current ``listing`` and ``listing_text``.
 
     These are ``listing_quality``, the property groups, ``feature_pattern`` and
-    ``listing_feature_label``, and ``listing_location`` when ``sections`` are given.
+    ``listing_feature_label``, ``listing_location`` when ``sections`` are given and
+    ``listing_text_label`` when ``answers`` are given.
     """
     # Read both before any rule: each rule replaces silver_listing or silver_listing_text, which
     # the reads fall back to while the catalog has no such table, with its own columns only.
     listing = _silver_columns(connection, catalog, "listing", None)
-    listing_text = _silver_columns(connection, catalog, "listing_text", FEATURE_TEXT_COLUMNS)
+    text_columns = (
+        FEATURE_TEXT_COLUMNS
+        if answers is None
+        else (
+            *FEATURE_TEXT_COLUMNS,
+            *(c for c in TEXT_LABEL_TEXT_COLUMNS if c not in FEATURE_TEXT_COLUMNS),
+        )
+    )
+    texts = _silver_columns(connection, catalog, "listing_text", text_columns)
+    listing_text = texts.select(list(FEATURE_TEXT_COLUMNS))
     grouped = listing.select(LABEL_LISTING_COLUMNS)
     located = (
         {}
@@ -491,6 +521,18 @@ def _labels_from_silver(
         else {
             LOCATION_TABLE: listing_locations(
                 connection, listing.select(LOCATION_LISTING_COLUMNS), sections
+            )
+        }
+    )
+    described = (
+        {}
+        if answers is None
+        else {
+            TEXT_LABEL_TABLE: listing_text_labels(
+                connection,
+                listing.select(list(TEXT_LABEL_LISTING_COLUMNS)),
+                texts.select(list(TEXT_LABEL_TEXT_COLUMNS)),
+                answers,
             )
         }
     )
@@ -504,6 +546,7 @@ def _labels_from_silver(
         "feature_pattern": feature_patterns(connection, listing, listing_text),
         "listing_feature_label": listing_feature_labels(connection, listing_text),
         **located,
+        **described,
     }
 
 
@@ -648,6 +691,44 @@ def listing_locations(
         connection.unregister("location_sections")
 
 
+def listing_text_labels(
+    connection: duckdb.DuckDBPyConnection,
+    listing: pa.Table,
+    listing_text: pa.Table,
+    answers: pa.Table,
+) -> pa.Table:
+    """The ``listing_text_label`` rows: one per row of Silver's ``listing_text``.
+
+    ``listing`` needs ``TEXT_LABEL_LISTING_COLUMNS``, ``listing_text`` ``TEXT_LABEL_TEXT_COLUMNS``
+    and ``answers`` the stored answers' text_sha256, label_version, model_id, renovation_state,
+    is_auction and labeled_at. All three are registered under names of this rule and removed
+    again, so no ``silver_<table>`` of the session is replaced.
+    """
+    _prepare(connection)
+    connection.execute("SET VARIABLE label_version = ?", [LABEL_VERSION])
+    inputs = {
+        "text_label_listing": listing.select(list(TEXT_LABEL_LISTING_COLUMNS)),
+        "text_label_text": listing_text.select(list(TEXT_LABEL_TEXT_COLUMNS)),
+        "text_label_answer": answers.select(
+            [
+                "text_sha256",
+                "label_version",
+                "model_id",
+                "renovation_state",
+                "is_auction",
+                "labeled_at",
+            ]
+        ),
+    }
+    for name, table in inputs.items():
+        connection.register(name, table)
+    try:
+        return connection.sql(_statement(TEXT_LABEL_TABLE)).to_arrow_table()
+    finally:
+        for name in inputs:
+            connection.unregister(name)
+
+
 def _replace_silver(connection: duckdb.DuckDBPyConnection, tables: Mapping[str, pa.Table]) -> None:
     for name, rows in tables.items():
         connection.register(f"given_{name}", rows)
@@ -697,7 +778,8 @@ def s3_commits(s3_client, location: str, exclude: Collection[str]) -> list[Landi
 def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client=None) -> int:
     """Run Silver once; exit 0 on success, 2 on usage.
 
-    Exit 1 when landing, a table schema or the census-section vintage is refused.
+    Exit 1 when landing, a table schema, the census-section vintage or a stored answer is
+    refused.
     """
     parser = argparse.ArgumentParser(
         prog="python -m src.silver.rebuild", description="Maintain Silver from landing v3."
@@ -722,6 +804,11 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         help="one census-section vintage, a directory or s3://bucket/prefix (ADR 0004); "
         "a run given it also writes listing_location",
     )
+    parser.add_argument(
+        "--text-labels",
+        help="the text labeller's stored answers, a directory or s3://bucket/prefix (ADR 0005); "
+        "a run given it also writes listing_text_label",
+    )
     arguments = parser.parse_args(argv)
     on_s3 = arguments.landing.startswith("s3://")
     if not on_s3 and not Path(arguments.landing).is_dir():
@@ -745,7 +832,10 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
             print("nothing pending")
         else:
             with duckdb.connect() as connection:
-                if on_s3 or (arguments.census_sections or "").startswith("s3://"):
+                if on_s3 or any(
+                    (location or "").startswith("s3://")
+                    for location in (arguments.census_sections, arguments.text_labels)
+                ):
                     _read_s3_through_duckdb(connection)
                 result = process_landing(
                     connection,
@@ -755,11 +845,17 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
                     list_commits=lambda: todo,
                     now=lambda: datetime.now(UTC),
                     census_sections=arguments.census_sections,
+                    text_labels=arguments.text_labels,
                 )
             remaining = 0
             unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
-    except (LandingContractError, SilverSchemaError, ReferenceDataError) as error:
+    except (
+        LandingContractError,
+        SilverSchemaError,
+        ReferenceDataError,
+        StoredAnswerError,
+    ) as error:
         print(f"Silver run refused: {error}", file=sys.stderr)
         return 1
     finally:
@@ -795,6 +891,8 @@ def _report(result: ProcessResult) -> None:
         print(f"{name}: snapshot {result.snapshot_ids.get(name)}")
     if LOCATION_TABLE in result.snapshot_ids:
         print(f"{LOCATION_TABLE}: snapshot {result.snapshot_ids[LOCATION_TABLE]}")
+    if TEXT_LABEL_TABLE in result.snapshot_ids:
+        print(f"{TEXT_LABEL_TABLE}: snapshot {result.snapshot_ids[TEXT_LABEL_TABLE]}")
     print(f"unknown feature patterns: {result.unknown_feature_patterns}")
 
 

@@ -1,9 +1,13 @@
 """Incremental Silver through any sequence of landing commits equals a backfill of the final landing."""
 
+import contextlib
+import io
 import tempfile
 import unittest
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import duckdb
 import pyarrow as pa
@@ -12,6 +16,9 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import AlwaysTrue
 
 from src.contracts import landing_v3_columns
+from src.enrichment import text_labels
+from src.enrichment.batches import BatchAnswer, BatchState
+from src.enrichment.labeler import LabelResult, TextLabel
 from src.reference.census_sections import convert
 from src.silver.ingest import ingested_runs
 from src.silver.landing import register_landing_v3
@@ -25,6 +32,7 @@ from src.silver.rebuild import (
     LOCATION_TABLE,
     NAMESPACE,
     SILVER_TABLES,
+    TEXT_LABEL_TABLE,
     TRANSFORMATION_VERSION,
     ReferenceDataError,
     build_tables,
@@ -583,6 +591,183 @@ class TestRunsGivenCensusSections(unittest.TestCase):
 
         self.assertEqual(0, result.pending)
         self.assertIn(LOCATION_TABLE, before)
+        self.assertEqual(self.snapshots(catalog), before)
+
+
+class EndingBatches:
+    """Fake message batches whose every batch has ended with a valid answer per text."""
+
+    def __init__(self) -> None:
+        self.submitted: dict[str, list[tuple[str, str]]] = {}
+
+    def submit(self, texts: Sequence[tuple[str, str]]) -> str:
+        batch_id = f"msgbatch_{len(self.submitted) + 1:02d}"
+        self.submitted[batch_id] = list(texts)
+        return batch_id
+
+    def state(self, batch_id: str) -> BatchState:
+        return BatchState(ended=True, ended_at=NOW, readable=True)
+
+    def answers(self, batch_id: str) -> Iterator[BatchAnswer]:
+        for text_sha256, _ in self.submitted[batch_id]:
+            yield BatchAnswer(
+                text_sha256, "succeeded", LabelResult(TextLabel("renovated", True), 100, 10)
+            )
+
+
+class TestRunsGivenTextLabels(unittest.TestCase):
+    """A run given the labeller's stored answers writes listing_text_label beside every table."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(cls.enterClassContext(tempfile.TemporaryDirectory()))
+        cls.landing = cls.root / "landing" / "v3"
+        cls.landing.mkdir(parents=True)
+        generate_landing_v3(cls.landing, seed=1)
+        cls.commits = sorted(local_commits(cls.landing), key=lambda c: (c.run_started_at, c.run_id))
+        # The answers are stored once, as the labeller stores them: a backfill, then one run
+        # that submits and one that collects.
+        cls.labels = str(cls.root / "labels")
+        catalog = SqlCatalog(
+            "labeller", uri=f"sqlite:///{cls.root}/labeller.db", warehouse=f"file://{cls.root}"
+        )
+        with duckdb.connect() as connection:
+            process_landing(
+                connection,
+                catalog,
+                landing=str(cls.landing),
+                mode="backfill",
+                list_commits=lambda: list(cls.commits),
+                now=lambda: NOW,
+            )
+        batches = EndingBatches()
+        arguments = [
+            "--catalog",
+            "labeller",
+            "--labels",
+            cls.labels,
+            "--batches",
+            str(cls.root / "batches"),
+            "--model-id",
+            "model-a",
+            "--max-texts",
+            "50",
+        ]
+        with (
+            mock.patch("src.enrichment.text_labels.load_catalog", return_value=catalog),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            for _ in range(2):
+                if text_labels.main(arguments, batches=batches, now=lambda: NOW) != 0:
+                    raise RuntimeError("the labeller fixture failed")
+
+    def catalog(self) -> SqlCatalog:
+        warehouse = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        return SqlCatalog(
+            "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
+        )
+
+    def process(self, catalog, commits, *, mode="incremental", labels=None):
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        return process_landing(
+            connection,
+            catalog,
+            landing=str(self.landing),
+            mode=mode,
+            list_commits=lambda: list(commits),
+            now=lambda: NOW,
+            text_labels=labels,
+        )
+
+    def rows(self, catalog, name: str) -> list[dict]:
+        return catalog.load_table(f"{NAMESPACE}.{name}").scan().to_arrow().to_pylist()
+
+    def row_sets(self, catalog, tables) -> dict[str, list[str]]:
+        return {name: sorted(map(repr, self.rows(catalog, name))) for name in tables}
+
+    def snapshots(self, catalog) -> dict[str, int]:
+        return {
+            name: catalog.load_table((namespace, name)).current_snapshot().snapshot_id
+            for namespace, name in catalog.list_tables(NAMESPACE)
+        }
+
+    def test_a_backfill_labels_every_sale_listing_with_a_description(self) -> None:
+        catalog = self.catalog()
+
+        result = self.process(catalog, self.commits, mode="backfill", labels=self.labels)
+
+        self.assertIsNotNone(result.snapshot_ids[TEXT_LABEL_TABLE])
+        operation = {
+            row["source_listing_id"]: row["operation"] for row in self.rows(catalog, "listing")
+        }
+        texts = self.rows(catalog, "listing_text")
+        labelled = {row["source_listing_id"]: row for row in self.rows(catalog, TEXT_LABEL_TABLE)}
+        self.assertEqual(len(labelled), len(texts))
+        sale_texts = [
+            row["source_listing_id"]
+            for row in texts
+            if operation.get(row["source_listing_id"]) == "sale"
+            and (row["description"] or "").strip()
+        ]
+        self.assertTrue(sale_texts)
+        for listing_id in sale_texts:
+            with self.subTest(listing=listing_id):
+                row = labelled[listing_id]
+                self.assertEqual(
+                    (row["renovation_state"], row["is_auction"], row["model_id"]),
+                    ("renovated", True, "model-a"),
+                )
+
+    def test_commits_one_at_a_time_give_the_rows_of_a_backfill(self) -> None:
+        tables = (*WRITTEN_TABLES, TEXT_LABEL_TABLE)
+        backfilled = self.catalog()
+        self.process(backfilled, self.commits, mode="backfill", labels=self.labels)
+        stepwise = self.catalog()
+
+        for end in range(1, len(self.commits) + 1):
+            self.process(stepwise, self.commits[:end], labels=self.labels)
+
+        expected = self.row_sets(backfilled, tables)
+        actual = self.row_sets(stepwise, tables)
+        for table in tables:
+            with self.subTest(table=table):
+                self.assertEqual(expected[table], actual[table])
+
+    def test_an_empty_directory_writes_the_table_with_null_labels(self) -> None:
+        catalog = self.catalog()
+        empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        self.process(catalog, self.commits, labels=str(empty))
+
+        rows = self.rows(catalog, TEXT_LABEL_TABLE)
+        self.assertEqual(len(rows), len(self.rows(catalog, "listing_text")))
+        self.assertEqual({row["renovation_state"] for row in rows}, {None})
+
+    def test_a_run_without_the_argument_writes_no_such_table_and_the_others_as_before(
+        self,
+    ) -> None:
+        with_labels = self.catalog()
+        self.process(with_labels, self.commits, labels=self.labels)
+        without = self.catalog()
+
+        result = self.process(without, self.commits)
+
+        self.assertFalse(without.table_exists(f"{NAMESPACE}.{TEXT_LABEL_TABLE}"))
+        self.assertNotIn(TEXT_LABEL_TABLE, result.snapshot_ids)
+        self.assertEqual(
+            self.row_sets(without, WRITTEN_TABLES), self.row_sets(with_labels, WRITTEN_TABLES)
+        )
+
+    def test_nothing_pending_writes_no_snapshot_of_the_table(self) -> None:
+        catalog = self.catalog()
+        self.process(catalog, self.commits, labels=self.labels)
+        before = self.snapshots(catalog)
+
+        result = self.process(catalog, self.commits, labels=self.labels)
+
+        self.assertEqual(0, result.pending)
+        self.assertIn(TEXT_LABEL_TABLE, before)
         self.assertEqual(self.snapshots(catalog), before)
 
 
