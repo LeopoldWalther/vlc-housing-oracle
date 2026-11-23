@@ -45,6 +45,20 @@ class LandingContractError(Exception):
     """Landing does not conform to the contract; no Silver table may be built from it."""
 
 
+def read_defect(error: duckdb.Error) -> str | None:
+    """What a failed read says about the file itself, or None when the read failed, not the file.
+
+    A file that is not Parquet or is missing is a defect of the input and refused; anything else
+    (a network, permission or disk failure) is an operational failure the caller re-raises.
+    """
+    if isinstance(error, duckdb.InvalidInputException):
+        return "is not a Parquet file"
+    # Only DuckDB sets status_code; an HTTPException built elsewhere carries none.
+    if isinstance(error, duckdb.HTTPException) and getattr(error, "status_code", None) == 404:
+        return "has no file"
+    return None
+
+
 def _check_columns(
     connection: duckdb.DuckDBPyConnection,
     table: str,
@@ -211,8 +225,11 @@ def _check_v3_file(
             "SELECT count(*), list(DISTINCT coalesce(observed_date::VARCHAR, 'null')) "
             f"FROM read_parquet({_literal(path)}, hive_partitioning = false)"
         ).fetchone()
-    except duckdb.IOException as error:
-        raise LandingContractError(f"landing table {table}: run {run_id} cannot be read") from error
+    except duckdb.Error as error:
+        defect = read_defect(error)
+        if defect is None:
+            raise
+        raise LandingContractError(f"landing table {table}: run {run_id} {defect}") from error
     if counts is not None and counts.get(table) != found:
         raise LandingContractError(
             f"landing table {table}: run {run_id} commit says {counts.get(table)} rows, "

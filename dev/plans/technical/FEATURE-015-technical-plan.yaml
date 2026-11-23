@@ -356,7 +356,7 @@ technical_plan:
       description: |
         read_defect in landing.py, used by _check_v3_file and read_census_sections as the
         conventions say. read_census_sections gets the local existence check.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.25
       depends_on: ["2.2"]

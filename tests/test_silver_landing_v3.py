@@ -7,7 +7,7 @@ from pathlib import Path
 
 import duckdb
 
-from src.silver.landing import LandingContractError, register_landing_v3
+from src.silver.landing import LandingContractError, read_defect, register_landing_v3
 from src.synthetic.landing import write_landing_v3
 
 RUN_A, RUN_B = "20261001T060000Z", "20261001T120000Z"
@@ -28,6 +28,24 @@ def key(run_id: str, listing_id: str = "syn-1") -> dict[str, object]:
         "observed_at": observed_at,
         "observed_date": observed_at.date(),
     }
+
+
+def http_error(status_code: int | None) -> duckdb.HTTPException:
+    """An HTTPException as DuckDB raises it; one built by hand carries no status code."""
+    error = duckdb.HTTPException("HTTP error on 'secret-object'")
+    if status_code is not None:
+        error.status_code = status_code
+    return error
+
+
+class FailingConnection:
+    """A connection whose every query raises the given error, as a failed read would."""
+
+    def __init__(self, error: duckdb.Error) -> None:
+        self.error = error
+
+    def sql(self, query: str) -> None:
+        raise self.error
 
 
 def card(run_id: str, listing_id: str = "syn-1", **overrides: object) -> dict[str, object]:
@@ -228,6 +246,69 @@ class TestRegisterLandingV3(unittest.TestCase):
             self.register()
 
         self.assertNotIn("syn-secret-9", str(raised.exception))
+
+
+class TestReadDefect(unittest.TestCase):
+    def test_an_invalid_input_is_not_a_parquet_file(self) -> None:
+        self.assertEqual(
+            "is not a Parquet file", read_defect(duckdb.InvalidInputException("bad magic"))
+        )
+
+    def test_an_http_404_is_a_missing_file(self) -> None:
+        self.assertEqual("has no file", read_defect(http_error(404)))
+
+    def test_other_read_errors_are_no_defect_of_the_file(self) -> None:
+        for error in (
+            duckdb.IOException("boom"),
+            http_error(None),
+            http_error(403),
+            duckdb.ConnectionException("boom"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.assertIsNone(read_defect(error))
+
+
+class TestReadErrorsOfLandingFiles(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write_landing_v3(self.root, {"observation": [card(RUN_A)]})
+        self.counts = {RUN_A: {"walk": 0, "observation": 1, "listing_detail": 0, "listing_text": 0}}
+
+    def register(self, connection: object, location: str | None = None) -> None:
+        register_landing_v3(
+            connection,
+            location or str(self.root),
+            dict.fromkeys(TABLES, {RUN_A}),
+            STARTED,
+            self.counts,
+        )
+
+    def test_a_file_of_garbage_bytes_is_not_a_parquet_file(self) -> None:
+        path = next(self.root.glob(f"observation/*/run={RUN_A}/part-0.parquet"))
+        path.write_bytes(b"secret garbage, not parquet")
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+
+        with self.assertRaises(LandingContractError) as refused:
+            self.register(connection)
+
+        self.assertEqual(
+            f"landing table observation: run {RUN_A} is not a Parquet file", str(refused.exception)
+        )
+
+    def test_a_failed_read_propagates_as_itself(self) -> None:
+        with self.assertRaisesRegex(duckdb.IOException, "^boom$"):
+            self.register(FailingConnection(duckdb.IOException("boom")))
+
+    def test_a_missing_remote_object_is_a_missing_file(self) -> None:
+        with self.assertRaises(LandingContractError) as refused:
+            self.register(FailingConnection(http_error(404)), "s3://landing-bucket/v3")
+
+        self.assertEqual(f"landing table walk: run {RUN_A} has no file", str(refused.exception))
+
+    def test_another_http_error_propagates_as_itself(self) -> None:
+        with self.assertRaises(duckdb.HTTPException):
+            self.register(FailingConnection(http_error(None)), "s3://landing-bucket/v3")
 
 
 if __name__ == "__main__":
