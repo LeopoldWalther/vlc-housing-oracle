@@ -113,7 +113,7 @@ technical_plan:
         IngestedRun reports the transformation_version of its log row. Add BackfillRequired and
         require_current_versions with check (a) and call it in process_landing as the
         conventions say. Check (b) is task 1.2.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: []

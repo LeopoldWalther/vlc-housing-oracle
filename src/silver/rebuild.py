@@ -27,7 +27,7 @@ from src.enrichment.text_labels import StoredAnswerError, stored_answers
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
-from src.silver.ingest import ingested_runs, record_ingested
+from src.silver.ingest import IngestedRun, ingested_runs, record_ingested
 from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
     PROPERTY_GROUP_LISTING_COLUMNS,
@@ -186,6 +186,25 @@ class ReferenceDataError(ValueError):
     """A reference vintage cannot be read or fails its check; the message holds no row value."""
 
 
+class BackfillRequired(Exception):
+    """Silver's tables were written by another rule or redaction version than this code's."""
+
+
+def require_current_versions(catalog: Catalog, ingested: Mapping[str, IngestedRun]) -> None:
+    """Refuse an incremental run over tables that another version of the rules wrote.
+
+    A run of the code's version would rewrite only the days and listings its commits touch and
+    leave the rest of history under the old version. A completed backfill rewrites every row of
+    the ingest log, so the log tells whether the rules of every table are the code's.
+    """
+    found = sorted({run.transformation_version for run in ingested.values()})
+    if found and found != [TRANSFORMATION_VERSION]:
+        raise BackfillRequired(
+            f"the ingest log holds transformation version {', '.join(found)}, this code is "
+            f"{TRANSFORMATION_VERSION}: run --mode backfill"
+        )
+
+
 @dataclass(frozen=True)
 class ProcessResult:
     """What one incremental or backfill run did."""
@@ -225,6 +244,9 @@ def process_landing(
     from Silver's history, and the ingest log is written last: a run that stops before it leaves
     its runs pending, and repeating them gives the same rows.
 
+    An incremental run over tables that another rule version wrote raises ``BackfillRequired``
+    before it reads landing, so it writes nothing; a backfill is the way to the new version.
+
     ``census_sections`` names one reference vintage directory. A run given it also writes
     ``listing_location``; the vintage is read and checked before the run's first write, so a
     ``ReferenceDataError`` leaves every table as it was and the runs pending.
@@ -238,6 +260,8 @@ def process_landing(
     backfill = mode == "backfill"
     commits = list_commits()
     ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
+    if not backfill:
+        require_current_versions(catalog, ingested)
     todo = pending(commits, set(ingested))
     if not todo:
         return ProcessResult(0, (), {}, 0, {}, 0)

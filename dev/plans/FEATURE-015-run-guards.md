@@ -1,6 +1,6 @@
 # FEATURE-015 — Run guards: a Silver run refuses what it cannot do correctly
 
-**Status:** 🔵 Planned · **Effort:** M (~9h) · **Priority:** High
+**Status:** 🟡 In progress · **Effort:** M (~9h) · **Priority:** High
 **Branch root:** `feature/run-guards` · **Created:** 2026-11-22 · **Updated:** 2026-11-23
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-015.md`).

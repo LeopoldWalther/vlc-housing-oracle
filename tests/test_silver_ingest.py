@@ -62,6 +62,7 @@ class TestIngestLog(unittest.TestCase):
             {date(2026, 10, 20), date(2026, 10, 21)}, second.observed_dates["observation"]
         )
         self.assertEqual(datetime(2026, 10, 20, 6, 0, tzinfo=UTC), second.run_started_at)
+        self.assertEqual(VERSION, second.transformation_version)
         versions = (
             self.catalog.load_table(f"{NAMESPACE}.landing_ingest")
             .scan()

@@ -34,6 +34,7 @@ from src.silver.rebuild import (
     SILVER_TABLES,
     TEXT_LABEL_TABLE,
     TRANSFORMATION_VERSION,
+    BackfillRequired,
     ReferenceDataError,
     build_tables,
     local_commits,
@@ -769,6 +770,90 @@ class TestRunsGivenTextLabels(unittest.TestCase):
         self.assertEqual(0, result.pending)
         self.assertIn(TEXT_LABEL_TABLE, before)
         self.assertEqual(self.snapshots(catalog), before)
+
+
+class TestVersionGuard(unittest.TestCase):
+    """An incremental run refuses tables that another rule or redaction version wrote."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.landing = Path(cls.temporary.name) / "landing" / "v3"
+        cls.landing.mkdir(parents=True)
+        generate_landing_v3(cls.landing, seed=1)
+        cls.commits = sorted(local_commits(cls.landing), key=lambda c: (c.run_started_at, c.run_id))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temporary.cleanup()
+
+    def setUp(self) -> None:
+        warehouse = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.catalog = SqlCatalog(
+            "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
+        )
+
+    def process(self, commits, mode="incremental"):
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        return process_landing(
+            connection,
+            self.catalog,
+            landing=str(self.landing),
+            mode=mode,
+            list_commits=lambda: list(commits),
+            now=lambda: NOW,
+        )
+
+    def snapshot_ids(self) -> dict[str, int]:
+        return {
+            identifier[-1]: self.catalog.load_table(identifier).current_snapshot().snapshot_id
+            for identifier in self.catalog.list_tables(NAMESPACE)
+        }
+
+    def test_a_run_under_another_rule_version_is_refused_and_writes_nothing(self) -> None:
+        self.process(self.commits[:-1])
+        before = self.snapshot_ids()
+
+        with (
+            mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"),
+            self.assertRaises(BackfillRequired) as refused,
+        ):
+            self.process(self.commits)
+
+        message = str(refused.exception)
+        for part in ("silver-v1", "silver-v2", "backfill"):
+            self.assertIn(part, message)
+        self.assertEqual(before, self.snapshot_ids())
+
+    def test_a_backfill_under_the_new_rule_version_clears_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            self.process(self.commits[:-1], mode="backfill")
+            result = self.process(self.commits)
+
+        self.assertEqual((self.commits[-1].run_id,), result.processed)
+
+    def test_a_backfill_that_stops_before_its_log_leaves_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            with (
+                mock.patch(
+                    "src.silver.rebuild.record_ingested", side_effect=RuntimeError("stopped")
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                self.process(self.commits[:-1], mode="backfill")
+            with self.assertRaises(BackfillRequired):
+                self.process(self.commits)
+
+    def test_a_catalog_without_an_ingest_log_is_not_refused(self) -> None:
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            result = self.process(self.commits[:1])
+
+        self.assertEqual((self.commits[0].run_id,), result.processed)
 
 
 if __name__ == "__main__":
