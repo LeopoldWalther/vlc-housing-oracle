@@ -195,13 +195,27 @@ def require_current_versions(catalog: Catalog, ingested: Mapping[str, IngestedRu
 
     A run of the code's version would rewrite only the days and listings its commits touch and
     leave the rest of history under the old version. A completed backfill rewrites every row of
-    the ingest log, so the log tells whether the rules of every table are the code's.
+    the ingest log, so the log tells whether the rules of every table are the code's. Redacted
+    text lives in ``listing_text`` only, and every write of it records the redaction version in
+    its snapshot summary, so its current snapshot tells whether its text is the code's.
     """
     found = sorted({run.transformation_version for run in ingested.values()})
     if found and found != [TRANSFORMATION_VERSION]:
         raise BackfillRequired(
             f"the ingest log holds transformation version {', '.join(found)}, this code is "
             f"{TRANSFORMATION_VERSION}: run --mode backfill"
+        )
+    identifier = f"{NAMESPACE}.listing_text"
+    if not catalog.table_exists(identifier):
+        return
+    snapshot = catalog.load_table(identifier).current_snapshot()
+    if snapshot is None:
+        return
+    redaction = snapshot.summary.get("redaction_version") if snapshot.summary else None
+    if redaction != REDACTION_VERSION:
+        raise BackfillRequired(
+            f"listing_text holds redaction version {redaction or 'unknown'}, this code is "
+            f"{REDACTION_VERSION}: run --mode backfill"
         )
 
 
@@ -244,8 +258,9 @@ def process_landing(
     from Silver's history, and the ingest log is written last: a run that stops before it leaves
     its runs pending, and repeating them gives the same rows.
 
-    An incremental run over tables that another rule version wrote raises ``BackfillRequired``
-    before it reads landing, so it writes nothing; a backfill is the way to the new version.
+    An incremental run over tables that another rule or redaction version wrote raises
+    ``BackfillRequired`` before it reads landing, so it writes nothing; a backfill is the way to
+    the new version.
 
     ``census_sections`` names one reference vintage directory. A run given it also writes
     ``listing_location``; the vintage is read and checked before the run's first write, so a

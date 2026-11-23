@@ -13,6 +13,7 @@ from src.silver.landing import LandingContractError
 from src.silver.property_group import PROPERTY_GROUP_TABLE
 from src.silver.rebuild import (
     NAMESPACE,
+    REDACTION_VERSION,
     SILVER_TABLES,
     ProcessResult,
     local_commits,
@@ -125,7 +126,14 @@ class TestBackfill(unittest.TestCase):
             old[table] = rows.drop_columns([c for c in ("run_id",) if c in rows.schema.names])
         for table in (*WRITTEN_TABLES, "landing_ingest"):
             self.catalog.drop_table(f"{NAMESPACE}.{table}")
-        write_silver_tables(self.catalog, NAMESPACE, old, {"transformation_version": "silver-v1"})
+        # FEATURE-001 stamped both versions on every snapshot; the current ones, so that the
+        # version guard passes and the schema is what refuses the run.
+        write_silver_tables(
+            self.catalog,
+            NAMESPACE,
+            old,
+            {"transformation_version": "silver-v1", "redaction_version": REDACTION_VERSION},
+        )
 
     def test_a_backfill_over_feature_001_tables_adds_the_new_columns(self) -> None:
         self.run_backfill()

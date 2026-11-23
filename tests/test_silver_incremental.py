@@ -849,8 +849,48 @@ class TestVersionGuard(unittest.TestCase):
             with self.assertRaises(BackfillRequired):
                 self.process(self.commits)
 
+    def test_a_run_under_another_redaction_version_is_refused_and_writes_nothing(self) -> None:
+        self.process(self.commits[:-1])
+        before = self.snapshot_ids()
+
+        with (
+            mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"),
+            self.assertRaises(BackfillRequired) as refused,
+        ):
+            self.process(self.commits)
+
+        message = str(refused.exception)
+        for part in ("r2", "r3", "backfill"):
+            self.assertIn(part, message)
+        self.assertEqual(before, self.snapshot_ids())
+
+    def test_listing_text_without_a_recorded_redaction_version_is_refused(self) -> None:
+        self.process(self.commits[:-1])
+        listing_text = self.catalog.load_table(f"{NAMESPACE}.listing_text")
+        listing_text.overwrite(listing_text.scan().to_arrow())
+
+        with self.assertRaises(BackfillRequired) as refused:
+            self.process(self.commits)
+
+        self.assertIn("unknown", str(refused.exception))
+
+    def test_a_backfill_under_the_new_redaction_version_clears_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"):
+            self.process(self.commits[:-1], mode="backfill")
+            result = self.process(self.commits)
+
+        self.assertEqual((self.commits[-1].run_id,), result.processed)
+
     def test_a_catalog_without_an_ingest_log_is_not_refused(self) -> None:
         with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            result = self.process(self.commits[:1])
+
+        self.assertEqual((self.commits[0].run_id,), result.processed)
+
+    def test_a_catalog_without_listing_text_is_not_refused_for_its_redaction(self) -> None:
+        with mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"):
             result = self.process(self.commits[:1])
 
         self.assertEqual((self.commits[0].run_id,), result.processed)
