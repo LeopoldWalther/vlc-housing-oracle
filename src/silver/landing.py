@@ -145,18 +145,20 @@ def register_landing_v3(
     contract = landing_v3_columns()
     for table, columns in contract.items():
         runs = sorted(runs_by_table.get(table, ()))
-        files = [_v3_file(location, table, run_id, run_started) for run_id in runs]
-        for run_id, path in zip(runs, files, strict=True):
+        # A pending run's file is checked even where its commit names no day, so a file holding
+        # rows its commit denies is refused instead of being silently left unread.
+        for run_id in sorted(set(runs) | set(expected_counts)):
             dates = expected_dates.get(run_id)
             _check_v3_file(
                 connection,
                 table,
                 run_id,
-                path,
+                _v3_file(location, table, run_id, run_started),
                 columns,
                 expected_counts.get(run_id),
                 None if dates is None else dates.get(table, ()),
             )
+        files = [_v3_file(location, table, run_id, run_started) for run_id in runs]
         view = f"landing_{table}"
         if files:
             listed = ", ".join(_literal(path) for path in files)

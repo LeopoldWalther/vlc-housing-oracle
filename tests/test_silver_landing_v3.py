@@ -187,6 +187,31 @@ class TestRegisterLandingV3(unittest.TestCase):
 
         self.assertEqual(1, self.count("landing_observation"))
 
+    def test_a_pending_run_is_checked_also_for_a_table_it_is_not_read_for(self) -> None:
+        self.write({"observation": [card(RUN_A)]})
+        next(self.root.glob(f"walk/*/run={RUN_A}/part-0.parquet")).unlink()
+
+        with self.assertRaisesRegex(LandingContractError, f"walk: run {RUN_A} has no file"):
+            self.register(
+                runs_by_table={"observation": {RUN_A}},
+                counts={
+                    RUN_A: {"walk": 0, "observation": 1, "listing_detail": 0, "listing_text": 0}
+                },
+            )
+
+    def test_a_pending_run_not_read_for_a_table_stays_out_of_its_view(self) -> None:
+        self.write({"observation": [card(RUN_A)], "listing_detail": [key(RUN_B)]})
+
+        self.register(
+            runs_by_table={"observation": {RUN_A}, "listing_detail": {RUN_B}},
+            counts={RUN_A: {"walk": 0, "observation": 1, "listing_detail": 0, "listing_text": 0}},
+        )
+
+        self.assertEqual(1, self.count("landing_observation"))
+        self.assertEqual(
+            [(RUN_B,)], self.connection.sql("SELECT run_id FROM landing_listing_detail").fetchall()
+        )
+
     def test_a_missing_file_is_refused_naming_table_and_run(self) -> None:
         self.write({"observation": [card(RUN_A)]})
         next(self.root.glob(f"walk/*/run={RUN_A}/part-0.parquet")).unlink()

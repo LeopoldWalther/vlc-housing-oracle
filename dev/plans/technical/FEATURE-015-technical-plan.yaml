@@ -299,7 +299,7 @@ technical_plan:
         For every pending run, the file of each of the four tables is checked, also when the
         commit names no day for that table and the run is therefore in no run set. The views
         stay over the named runs.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["2.1"]
