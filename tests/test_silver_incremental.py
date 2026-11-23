@@ -918,6 +918,32 @@ class TestVersionGuard(unittest.TestCase):
                     self.assertIn(part, message)
                 self.assertEqual([], self.catalog.list_namespaces())
 
+    def test_a_file_of_a_table_whose_commit_names_no_day_is_checked(self) -> None:
+        landing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "v3"
+        shutil.copytree(self.landing, landing)
+        target = next(c for c in self.commits if c.row_counts["walk"])
+        path = landing / "_commits" / f"{target.run_id}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["observed_dates"]["walk"] = []
+        raw["row_counts"]["walk"] = 0
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+
+        with self.assertRaises(LandingContractError) as refused:
+            process_landing(
+                connection,
+                self.catalog,
+                landing=str(landing),
+                mode="incremental",
+                list_commits=lambda: local_commits(landing),
+                now=lambda: NOW,
+            )
+
+        for part in ("walk", target.run_id):
+            self.assertIn(part, str(refused.exception))
+        self.assertEqual([], self.catalog.list_namespaces())
+
     def test_a_catalog_without_an_ingest_log_is_not_refused(self) -> None:
         with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
             result = self.process(self.commits[:1])
