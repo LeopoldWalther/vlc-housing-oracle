@@ -477,7 +477,7 @@ technical_plan:
     - id: "3.3"
       title: "The consumer does not retry a refusal"
       description: "Exit code 3 returns normally from the consumer, with one log line."
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.5
       depends_on: ["3.2"]
