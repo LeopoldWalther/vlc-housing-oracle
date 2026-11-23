@@ -419,7 +419,7 @@ technical_plan:
         main as the conventions describe it: EXIT_REFUSED, the log read, the commit listing and
         the guard inside the reporting block, the refusal line with the cause's type, and the
         metric published only when the pending count is known.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["3.1"]

@@ -190,6 +190,19 @@ class BackfillRequired(Exception):
     """Silver's tables were written by another rule or redaction version than this code's."""
 
 
+# The command's exit code for a refused run: its input or its tables are wrong, so a retry of
+# the same run would be refused again. src/silver/consumer.py holds the same value.
+EXIT_REFUSED = 3
+
+REFUSALS = (
+    LandingContractError,
+    SilverSchemaError,
+    ReferenceDataError,
+    StoredAnswerError,
+    BackfillRequired,
+)
+
+
 def require_current_versions(catalog: Catalog, ingested: Mapping[str, IngestedRun]) -> None:
     """Refuse an incremental run over tables that another version of the rules wrote.
 
@@ -821,10 +834,11 @@ def s3_commits(s3_client, location: str, exclude: Collection[str]) -> list[Landi
 
 
 def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client=None) -> int:
-    """Run Silver once; exit 0 on success, 2 on usage.
+    """Run Silver once and return its exit code.
 
-    Exit 1 when landing, a table schema, the census-section vintage or a stored answer is
-    refused.
+    0: done, or nothing pending. 1: failed (an unhandled error, with Python's traceback; the
+    queue retries it). 2: usage. 3: refused (``REFUSALS``; retrying cannot help), with one
+    line on stderr naming the defect and the type of its cause, never the cause's text.
     """
     parser = argparse.ArgumentParser(
         prog="python -m src.silver.rebuild", description="Maintain Silver from landing v3."
@@ -860,19 +874,23 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         parser.error(f"--landing {arguments.landing} is not a directory")
 
     catalog = load_catalog(arguments.catalog)
-    exclude = set() if arguments.mode == "backfill" else set(ingested_runs(catalog, NAMESPACE))
-    if on_s3:
-        if s3_client is None:
-            import boto3
-
-            s3_client = boto3.client("s3")
-        todo = s3_commits(s3_client, arguments.landing, exclude)
-    else:
-        todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in exclude]
-
-    remaining = len(todo)
+    backfill = arguments.mode == "backfill"
+    # None until the commits are listed: a refusal while listing measured nothing to publish.
+    remaining = None
     unknown_feature_patterns = None
     try:
+        ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
+        if on_s3:
+            if s3_client is None:
+                import boto3
+
+                s3_client = boto3.client("s3")
+            todo = s3_commits(s3_client, arguments.landing, set(ingested))
+        else:
+            todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in ingested]
+        remaining = len(todo)
+        if not backfill:
+            require_current_versions(catalog, ingested)
         if not todo:
             print("nothing pending")
         else:
@@ -895,18 +913,21 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
             remaining = 0
             unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
-    except (
-        LandingContractError,
-        SilverSchemaError,
-        ReferenceDataError,
-        StoredAnswerError,
-    ) as error:
-        print(f"Silver run refused: {error}", file=sys.stderr)
-        return 1
+    except REFUSALS as error:
+        print(f"Silver run refused: {error}{_cause(error)}", file=sys.stderr)
+        return EXIT_REFUSED
     finally:
-        if arguments.metrics:
+        if arguments.metrics and remaining is not None:
             _publish_metrics(cloudwatch_client, remaining, unknown_feature_patterns)
     return 0
+
+
+def _cause(error: Exception) -> str:
+    """The type of a refusal's cause, for the operator; its text may hold a row value."""
+    cause = error.__cause__
+    if cause is None:
+        return ""
+    return f" [cause: {type(cause).__module__}.{type(cause).__qualname__}]"
 
 
 def _read_s3_through_duckdb(connection: duckdb.DuckDBPyConnection) -> None:
