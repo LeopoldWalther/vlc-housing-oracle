@@ -2,10 +2,12 @@
 
 import contextlib
 import io
+import json
+import shutil
 import tempfile
 import unittest
 from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +23,7 @@ from src.enrichment.batches import BatchAnswer, BatchState
 from src.enrichment.labeler import LabelResult, TextLabel
 from src.reference.census_sections import convert
 from src.silver.ingest import ingested_runs
-from src.silver.landing import register_landing_v3
+from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
     PROPERTY_GROUP_SCHEMA,
     PROPERTY_GROUP_TABLE,
@@ -882,6 +884,39 @@ class TestVersionGuard(unittest.TestCase):
             result = self.process(self.commits)
 
         self.assertEqual((self.commits[-1].run_id,), result.processed)
+
+    def test_a_commit_that_does_not_name_a_day_of_its_file_is_refused_before_any_write(
+        self,
+    ) -> None:
+        landing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "v3"
+        shutil.copytree(self.landing, landing)
+        # The commit names the next day instead of its file's, so its file is still opened; a
+        # commit that names no day at all is the case of the next test.
+        target = next(c for c in self.commits if c.observed_dates["observation"])
+        (day,) = target.observed_dates["observation"]
+        path = landing / "_commits" / f"{target.run_id}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["observed_dates"]["observation"] = [(day + timedelta(days=1)).isoformat()]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        for mode in ("incremental", "backfill"):
+            with self.subTest(mode=mode):
+                connection = duckdb.connect()
+                self.addCleanup(connection.close)
+                with self.assertRaises(LandingContractError) as refused:
+                    process_landing(
+                        connection,
+                        self.catalog,
+                        landing=str(landing),
+                        mode=mode,
+                        list_commits=lambda: local_commits(landing),
+                        now=lambda: NOW,
+                    )
+
+                message = str(refused.exception)
+                for part in ("observation", target.run_id, day.isoformat()):
+                    self.assertIn(part, message)
+                self.assertEqual([], self.catalog.list_namespaces())
 
     def test_a_catalog_without_an_ingest_log_is_not_refused(self) -> None:
         with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):

@@ -236,7 +236,7 @@ technical_plan:
         register_landing_v3 takes expected_dates and _check_v3_file compares the file's days with
         the commit's, as the conventions say. process_landing passes the pending commits' days.
         Only files that are opened today are checked in this task.
-      status: "not_started"
+      status: "done"
       complexity: "medium"
       estimated_hours: 1.5
       depends_on: ["1.2"]

@@ -2,7 +2,7 @@
 
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -43,10 +43,24 @@ class TestRegisterLandingV3(unittest.TestCase):
     def write(self, rows_by_table: dict) -> None:
         write_landing_v3(self.root, rows_by_table)
 
-    def register(self, runs_by_table: dict | None = None, counts: dict | None = None) -> None:
+    def register(
+        self,
+        runs_by_table: dict | None = None,
+        counts: dict | None = None,
+        dates: dict | None = None,
+    ) -> None:
         written = {path.stem for path in (self.root / "_commits").glob("*.json")}
         runs = runs_by_table or dict.fromkeys(TABLES, written)
-        register_landing_v3(self.connection, str(self.root), runs, STARTED, counts or {})
+        register_landing_v3(
+            self.connection, str(self.root), runs, STARTED, counts or {}, expected_dates=dates
+        )
+
+    def register_run_a(self, observation_days: set[date]) -> None:
+        """Register run A as pending: one observation row, its commit naming the given days."""
+        self.register(
+            counts={RUN_A: {"walk": 0, "observation": 1, "listing_detail": 0, "listing_text": 0}},
+            dates={RUN_A: dict.fromkeys(TABLES, set()) | {"observation": observation_days}},
+        )
 
     def count(self, view: str) -> int:
         return self.connection.sql(f"SELECT count(*) FROM {view}").fetchone()[0]
@@ -141,6 +155,37 @@ class TestRegisterLandingV3(unittest.TestCase):
                 ).fetchall()
             ],
         )
+
+    def test_a_file_holding_a_day_its_commit_does_not_name_is_refused(self) -> None:
+        self.write({"observation": [card(RUN_A)]})
+
+        with self.assertRaisesRegex(
+            LandingContractError,
+            f"observation: run {RUN_A} holds rows of 2026-10-01 that its commit does not name",
+        ):
+            self.register_run_a(set())
+
+    def test_a_commit_naming_a_day_its_file_does_not_hold_is_refused(self) -> None:
+        self.write({"observation": [card(RUN_A)]})
+
+        with self.assertRaisesRegex(
+            LandingContractError,
+            f"observation: run {RUN_A} commit names 2026-10-02 that its file does not hold",
+        ):
+            self.register_run_a({date(2026, 10, 1), date(2026, 10, 2)})
+
+    def test_a_null_day_is_a_day_the_commit_does_not_name(self) -> None:
+        self.write({"observation": [card(RUN_A, observed_date=None)]})
+
+        with self.assertRaisesRegex(LandingContractError, f"run {RUN_A} holds rows of null"):
+            self.register_run_a(set())
+
+    def test_a_file_whose_days_equal_its_commit_is_registered(self) -> None:
+        self.write({"observation": [card(RUN_A)]})
+
+        self.register_run_a({date(2026, 10, 1)})
+
+        self.assertEqual(1, self.count("landing_observation"))
 
     def test_a_missing_file_is_refused_naming_table_and_run(self) -> None:
         self.write({"observation": [card(RUN_A)]})
