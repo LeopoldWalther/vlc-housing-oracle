@@ -63,7 +63,8 @@ Two facts of this corpus constrain any incremental design:
     `transformation_version`, a redaction `r2` or a new dedupe rule, cannot be applied
     incrementally to history. The whole-history path (FEATURE-001's `rebuild`) stays, runs only when
     started on purpose, and records the newest manifest it covered as its checkpoint. A first run
-    with no checkpoint is a backfill.
+    with no checkpoint is a backfill. An incremental run over tables written under another
+    transformation or redaction version is refused until that backfill has run (FEATURE-015).
 
 ADR 0001 otherwise stands: Silver is Iceberg, Gold is plain Parquet, and a training dataset pins a
 Silver snapshot.

@@ -536,7 +536,7 @@ technical_plan:
         stay. docs/adr/0002-incremental-processing.md, decision 5: one sentence that an
         incremental run under another version is refused. docs/architecture.html: the limit
         "No guard on rule versions" is removed; no other place of the page names it.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["3.3"]

@@ -570,7 +570,7 @@ footer .wrap { display: grid; gap: 8px; }
             <div><dt>Trigger</dt><dd>EventBridge rule on <code>Object Created</code> under <code>landing/v3/_commits/</code></dd></div>
             <div><dt>Runs on</dt><dd>SQS FIFO with one message group, AWS Lambda consumer</dd></div>
             <div><dt>Why a queue</dt><dd>PyIceberg rebases a conflicting commit instead of failing, so two overlapping runs must be prevented before they start</dd></div>
-            <div><dt>On failure</dt><dd>the batch is redelivered; after three receives it moves to a dead-letter queue that raises an alarm</dd></div>
+            <div><dt>On failure</dt><dd>the batch is redelivered; after three receives it moves to a dead-letter queue that raises an alarm. A run refused for its input is not retried</dd></div>
           </dl>
         </div>
       </li>
@@ -1215,7 +1215,6 @@ footer .wrap { display: grid; gap: 8px; }
       <li><strong>No consistency point across tables.</strong><span>A run is up to fourteen separate Iceberg commits. The ingest log written last makes a crash harmless for the pipeline, but a reader can catch a run halfway, and the snapshot ids that belong together are only printed in the task log. Next: a run manifest written last that consumers and a rollback command read.</span></li>
       <li><strong>No table maintenance.</strong><span>Snapshot expiry, compaction and orphan-file removal are not implemented, and every run adds snapshots to every table it rewrites. The policy has to be set before the first training dataset pins a snapshot: tag what is pinned, expire the rest.</span></li>
       <li><strong>Work per run follows history, not the change.</strong><span>Only the three fact tables are incremental. Label and history tables are recomputed whole, in an in-memory engine on a 2 GB task whose peak memory nobody measures. That is about a minute today at 23,000 listings. Next: record duration and peak memory per run, set a memory limit with spill to disk, then make the per-listing tables incremental.</span></li>
-      <li><strong>No guard on rule versions.</strong><span>The transformation and redaction versions are stamped on what a run writes, but nothing refuses an incremental run after a version change that has not been backfilled. The version has stayed at its first value because later features added tables instead of changing rules.</span></li>
       <li><strong>Silence is not an alarm.</strong><span>Metrics are published by a run. If the queue consumer is left disabled after a backfill, or commits stop arriving, every alarm stays green. The daily catch-up already produces one datapoint a day, so the fix is to treat a day without one as a breach.</span></li>
       <li><strong>One lane, no way around a bad commit.</strong><span>Silver processes all pending commits or none. A landing commit that breaks the contract stops every later one, and landing is immutable, so there is no written repair path yet. A healthy run longer than about 45 minutes would also end in the dead-letter queue.</span></li>
       <li><strong>Landing v4 is not consumed yet.</strong><span>The acquisition side already writes a fourth contract version beside v3, with four more detail columns. This repository still pins and reads v3, and no feature owns the move.</span></li>
