@@ -14,6 +14,7 @@ from unittest import mock
 from pyiceberg.catalog.sql import SqlCatalog
 
 from src.reference.census_sections import convert
+from src.silver.landing import LandingContractError
 from src.silver.rebuild import DAY_TABLES, main
 from src.synthetic.landing import generate_landing_v3
 from src.synthetic.reference import PROVINCE, SYNTHETIC_CRS, write_census_archive
@@ -86,14 +87,32 @@ class TestSilverCli(unittest.TestCase):
         catalog = SqlCatalog(
             "test", uri=f"sqlite:///{self.root}/catalog.db", warehouse=f"file://{self.root}"
         )
-        output = io.StringIO()
+        output, errors = io.StringIO(), io.StringIO()
         with (
             mock.patch("src.silver.rebuild.load_catalog", return_value=catalog),
             contextlib.redirect_stdout(output),
-            contextlib.redirect_stderr(io.StringIO()),
+            contextlib.redirect_stderr(errors),
         ):
             code = main(list(arguments), **clients)
+        self.errors = errors.getvalue()
         return code, output.getvalue()
+
+    def published(self, cloudwatch: FakeCloudWatch) -> list[list[tuple[str, int]]]:
+        return [
+            [(d["MetricName"], d["Value"]) for d in call["MetricData"]]
+            for call in cloudwatch.published
+        ]
+
+    def ingest_all_but(self, held_back: int) -> None:
+        """Process every commit except the last ``held_back``, which stay pending."""
+        commits = sorted((self.landing / "_commits").glob("*.json"))[-held_back:]
+        aside = self.root / "aside"
+        aside.mkdir()
+        for commit in commits:
+            commit.rename(aside / commit.name)
+        self.run_main("--landing", str(self.landing), "--catalog", "test")
+        for commit in commits:
+            (aside / commit.name).rename(commit)
 
     def census_sections(self) -> str:
         """A converted synthetic vintage directory."""
@@ -176,7 +195,7 @@ class TestSilverCli(unittest.TestCase):
 
         completed = self.run_cli("--landing", str(self.landing), "--catalog", "test")
 
-        self.assertEqual(1, completed.returncode)
+        self.assertEqual(3, completed.returncode)
         self.assertIn("walk", completed.stderr)
 
     def test_s3_commits_are_listed_and_only_pending_ones_read(self) -> None:
@@ -242,7 +261,7 @@ class TestSilverCli(unittest.TestCase):
             cloudwatch_client=cloudwatch,
         )
 
-        self.assertEqual(1, code)
+        self.assertEqual(3, code)
         self.assertEqual(self.runs, cloudwatch.published[0]["MetricData"][0]["Value"])
 
     def test_a_run_given_census_sections_prints_the_location_snapshot_after_the_labels(
@@ -295,14 +314,14 @@ class TestSilverCli(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertNotIn("listing_text_label", output)
 
-    def test_a_missing_census_sections_directory_exits_1_naming_the_path(self) -> None:
+    def test_a_missing_census_sections_directory_exits_3_naming_the_path(self) -> None:
         missing = str(self.root / "reference" / "no-such-vintage")
 
         completed = self.run_cli(
             "--landing", str(self.landing), "--catalog", "test", "--census-sections", missing
         )
 
-        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertEqual(3, completed.returncode, completed.stderr)
         self.assertIn(missing, completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
 
@@ -320,7 +339,7 @@ class TestSilverCli(unittest.TestCase):
             cloudwatch_client=cloudwatch,
         )
 
-        self.assertEqual(1, code)
+        self.assertEqual(3, code)
         self.assertEqual(
             [[("PendingRuns", self.runs)]],
             [
@@ -328,6 +347,99 @@ class TestSilverCli(unittest.TestCase):
                 for call in cloudwatch.published
             ],
         )
+
+    def test_a_commit_of_another_landing_version_exits_3_publishing_nothing(self) -> None:
+        commit = sorted((self.landing / "_commits").glob("*.json"))[0]
+        commit.write_text(json.dumps(json.loads(commit.read_text()) | {"version": "v4"}))
+        cloudwatch = FakeCloudWatch()
+
+        code, _ = self.run_main(
+            "--landing",
+            str(self.landing),
+            "--catalog",
+            "test",
+            "--metrics",
+            cloudwatch_client=cloudwatch,
+        )
+
+        self.assertEqual(3, code)
+        self.assertIn("is not landing v3", self.errors)
+        self.assertNotIn("Traceback", self.errors)
+        self.assertEqual([], cloudwatch.published)
+
+    def test_another_rule_version_exits_3_publishing_the_pending_runs(self) -> None:
+        for held_back in (2, 0):
+            with self.subTest(pending=held_back):
+                self.setUp()
+                if held_back:
+                    self.ingest_all_but(held_back)
+                else:
+                    self.run_main("--landing", str(self.landing), "--catalog", "test")
+                cloudwatch = FakeCloudWatch()
+
+                with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v99"):
+                    code, output = self.run_main(
+                        "--landing",
+                        str(self.landing),
+                        "--catalog",
+                        "test",
+                        "--metrics",
+                        cloudwatch_client=cloudwatch,
+                    )
+
+                self.assertEqual(3, code)
+                self.assertIn("backfill", self.errors)
+                self.assertNotIn("nothing pending", output)
+                self.assertEqual([[("PendingRuns", held_back)]], self.published(cloudwatch))
+
+    def test_a_backfill_is_not_refused_for_another_rule_version(self) -> None:
+        self.run_main("--landing", str(self.landing), "--catalog", "test")
+
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v99"):
+            code, _ = self.run_main(
+                "--landing", str(self.landing), "--catalog", "test", "--mode", "backfill"
+            )
+
+        self.assertEqual(0, code, self.errors)
+
+    def test_a_refusal_names_the_type_of_its_cause_and_none_of_its_text(self) -> None:
+        def refuse(*args, **kwargs):
+            raise LandingContractError("landing table walk: run r1 is refused") from ValueError(
+                "secret-cause-text"
+            )
+
+        with mock.patch("src.silver.rebuild.process_landing", side_effect=refuse):
+            code, _ = self.run_main("--landing", str(self.landing), "--catalog", "test")
+
+        self.assertEqual(3, code)
+        self.assertEqual(
+            "Silver run refused: landing table walk: run r1 is refused [cause: builtins.ValueError]\n",
+            self.errors,
+        )
+
+    def test_a_failed_read_exits_1_with_a_traceback(self) -> None:
+        script = (
+            "import sys; from unittest import mock; import duckdb; "
+            "from src.silver.rebuild import main; "
+            "boom = duckdb.IOException('boom'); "
+            "patched = mock.patch('src.silver.rebuild.process_landing', side_effect=boom); "
+            "patched.start(); "
+            "sys.exit(main(sys.argv[1:]))"
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-c", script, "--landing", str(self.landing), "--catalog", "test"],
+            cwd=REPO_ROOT,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertIn("Traceback", completed.stderr)
+        self.assertIn("IOException: boom", completed.stderr)
+        self.assertNotIn("Silver run refused", completed.stderr)
 
 
 if __name__ == "__main__":
