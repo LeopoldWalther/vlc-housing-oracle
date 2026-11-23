@@ -28,7 +28,7 @@ from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
 from src.silver.ingest import IngestedRun, ingested_runs, record_ingested
-from src.silver.landing import LandingContractError, register_landing_v3
+from src.silver.landing import LandingContractError, read_defect, register_landing_v3
 from src.silver.property_group import (
     PROPERTY_GROUP_LISTING_COLUMNS,
     PROPERTY_GROUP_TABLE,
@@ -508,6 +508,8 @@ def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa
     on every row. Anything else raises ``ReferenceDataError`` naming the path and the defect.
     """
     file = f"{path.rstrip('/')}/part-0.parquet"
+    if "://" not in file and not Path(file).is_file():
+        raise ReferenceDataError(f"census sections {file} has no file")
     # The directory is named vintage=<date>: without this the path would supply the column.
     source = "read_parquet(?, hive_partitioning = false)"
     try:
@@ -520,7 +522,10 @@ def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa
             f"SELECT {', '.join(CENSUS_SECTION_COLUMNS)} FROM {source}", [file]
         ).to_arrow_table()
     except duckdb.Error as error:
-        raise ReferenceDataError(f"census sections {file} cannot be read") from error
+        defect = read_defect(error)
+        if defect is None:
+            raise
+        raise ReferenceDataError(f"census sections {file} {defect}") from error
     if sections.num_rows == 0:
         raise ReferenceDataError(f"census sections {file} hold no row")
     vintages = pc.count_distinct(sections["vintage"], mode="all").as_py()

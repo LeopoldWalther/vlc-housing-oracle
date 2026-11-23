@@ -41,6 +41,7 @@ from src.silver.rebuild import (
     build_tables,
     local_commits,
     process_landing,
+    read_census_sections,
 )
 from src.silver.sink import write_silver_tables
 from src.synthetic.landing import generate_landing_v3
@@ -50,6 +51,24 @@ NOW = datetime(2026, 10, 20, 6, 0, tzinfo=UTC)
 
 # Every table a run writes: those of build_tables and the property groups computed in Python.
 WRITTEN_TABLES = (*SILVER_TABLES, PROPERTY_GROUP_TABLE)
+
+
+def http_error(status_code: int | None) -> duckdb.HTTPException:
+    """An HTTPException as DuckDB raises it; one built by hand carries no status code."""
+    error = duckdb.HTTPException("HTTP error on 'secret-object'")
+    if status_code is not None:
+        error.status_code = status_code
+    return error
+
+
+class FailingConnection:
+    """A connection whose every query raises the given error, as a failed read would."""
+
+    def __init__(self, error: duckdb.Error) -> None:
+        self.error = error
+
+    def execute(self, query: str, parameters: object = None) -> None:
+        raise self.error
 
 
 class TestIncrementalEqualsBackfill(unittest.TestCase):
@@ -584,6 +603,33 @@ class TestRunsGivenCensusSections(unittest.TestCase):
             self.process(catalog, self.commits, census_sections=without_district)
 
         self.assertIn("district_code", str(refused.exception))
+
+    def test_a_vintage_that_cannot_be_read_is_refused_or_propagates(self) -> None:
+        missing = str(self.root / "reference" / "no-such-vintage")
+        garbage = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (garbage / "part-0.parquet").write_bytes(b"secret garbage, not parquet")
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        remote = "s3://reference-bucket/vintage=2026-01-01"
+        refusals = {
+            "a missing local vintage": (connection, missing, "has no file"),
+            "a file of garbage bytes": (connection, str(garbage), "is not a Parquet file"),
+            "a missing remote object": (FailingConnection(http_error(404)), remote, "has no file"),
+        }
+        for case, (reader, path, defect) in refusals.items():
+            with self.subTest(case=case):
+                with self.assertRaises(ReferenceDataError) as refused:
+                    read_census_sections(reader, path)
+
+                self.assertEqual(
+                    f"census sections {path}/part-0.parquet {defect}", str(refused.exception)
+                )
+        for error in (duckdb.IOException("boom"), http_error(None)):
+            with self.subTest(propagates=type(error).__name__):
+                with self.assertRaises(type(error)) as raised:
+                    read_census_sections(FailingConnection(error), self.vintage)
+
+                self.assertIs(error, raised.exception)
 
     def test_nothing_pending_writes_no_snapshot_of_the_table(self) -> None:
         catalog = self.catalog()
