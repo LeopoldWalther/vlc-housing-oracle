@@ -305,8 +305,9 @@ claim below was checked against the code on that day.
     window and correct the text? Recommendation: end it, at 1,800 s, twenty times the longest run
     measured; a hung task otherwise costs more per day than the platform per month.
 - **Question (owner, before 3.3):** the amount. The account stood at $8.33 on 2026-11-23
-    against the $5 limit of the budget deleted that day, cause unknown. Recommendation: read the bill by service
-    first, then set this budget to about twice the platform's real monthly cost.
+    against the $5 limit of the budget deleted that day, cause unknown. Recommendation: read
+    the bill by service first, then set this budget to about twice the platform's real monthly
+    cost.
 - **Risk:** the account has no cost alarm from 2026-11-23 until task 4.2 is applied. —
     *Mitigation:* none in this plan; a budget made by hand in the meantime is deleted in 4.2.
 - **Question (owner, before 4.2 and 4.3):** approve the apply and the drill, which holds Silver
