@@ -296,6 +296,7 @@ def process_landing(
         runs_for(days, known),
         run_started,
         {commit.run_id: commit.row_counts for commit in todo},
+        expected_dates={commit.run_id: commit.observed_dates for commit in todo},
     )
     tables = build_tables(connection)
     properties = _properties(todo, now)
