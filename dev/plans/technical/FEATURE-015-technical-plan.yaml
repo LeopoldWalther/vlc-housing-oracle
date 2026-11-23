@@ -177,7 +177,7 @@ technical_plan:
       title: "Redaction-version guard"
       description: |
         Add check (b) to require_current_versions: the current snapshot summary of listing_text.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 1.0
       depends_on: ["1.1"]
@@ -209,6 +209,10 @@ technical_plan:
       allowed_files:
         - "src/silver/rebuild.py"
         - "tests/test_silver_incremental.py"
+        # Added during implementation: the fixture of FEATURE-001's tables wrote a snapshot
+        # without redaction_version, which FEATURE-001 itself always stamped; the guard refused
+        # it before the schema check the test pins. The fixture now stamps the current version.
+        - "tests/test_silver_rebuild.py"
       forbidden_files:
         - "infra/**"
         - "contracts/**"
@@ -224,6 +228,7 @@ technical_plan:
       files_to_modify:
         - "src/silver/rebuild.py"
         - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
 
     - id: "2.1"
       title: "A pending file's days equal its commit's"
