@@ -27,6 +27,7 @@ class IngestedRun:
     run_id: str
     run_started_at: datetime
     observed_dates: Mapping[str, frozenset[date]]
+    transformation_version: str
 
 
 def _schema() -> pa.Schema:
@@ -58,6 +59,7 @@ def ingested_runs(catalog: Catalog, namespace: str) -> dict[str, IngestedRun]:
             observed_dates={
                 table: frozenset(row[f"observed_dates_{table}"] or ()) for table in tables
             },
+            transformation_version=row["transformation_version"],
         )
         for row in catalog.load_table(identifier).scan().to_arrow().to_pylist()
     }
