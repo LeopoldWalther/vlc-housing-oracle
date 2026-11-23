@@ -21,8 +21,22 @@ speculative roadmap: add a row only when its top-level plan exists.
 | FEATURE-011 | [Listing location from coordinates: municipality, district and census section](FEATURE-011-listing-location.md) | 🟢 Complete | `feature/listing-location` | M (~11h) | Medium | architect |
 | FEATURE-012 | [Labels read from the description by a language model](FEATURE-012-text-labels.md) | 🟡 In progress | `feature/text-labels` | L (~26h) | Medium | architect |
 | FEATURE-013 | [Property groups move from Gold to Silver](FEATURE-013-property-groups-in-silver.md) — implemented first, before FEATURE-009 to FEATURE-012 | 🟢 Complete | `feature/property-groups-in-silver` | M (~6h) | High | architect |
+| FEATURE-015 | [Run guards: a Silver run refuses what it cannot do correctly](FEATURE-015-run-guards.md) | 🔵 Planned | `feature/run-guards` | M (~9h) | High | architect |
+| FEATURE-016 | [Alarms for silence, a run-time limit and run telemetry](FEATURE-016-silence-alarms.md) | 🔵 Planned | `feature/silence-alarms` | M (~10h) | High | architect |
+| FEATURE-017 | [Labeller run safety: a served version, one run at a time, stable answers](FEATURE-017-labeller-run-safety.md) | 🔵 Planned | `feature/labeller-run-safety` | M (~10h) | High | architect |
+| FEATURE-018 | [Feature wordings by digest: the tree no longer quotes the source](FEATURE-018-feature-wording-digests.md) | 🔵 Planned | `feature/feature-wording-digests` | S (~6h) | High | architect |
+| FEATURE-019 | [Pinned deployment: one commit, one digest, one reviewed plan](FEATURE-019-pinned-deployment.md) | 🔵 Planned | `feature/pinned-deployment` | M (~9h) | Medium | architect |
+| FEATURE-020 | [Run manifest, rollback and snapshot expiry](FEATURE-020-run-manifest.md) | 🔵 Planned | `feature/run-manifest` | M (~14h) | High | architect |
+| FEATURE-021 | [Silver follows landing v4, and the contract has one source](FEATURE-021-landing-v4.md) | 🔵 Planned | `feature/landing-v4` | M (~12h) | Medium | architect |
+| FEATURE-022 | [One declaration per Silver table, and `rebuild.py` cut into modules](FEATURE-022-table-registry.md) | 🔵 Planned | `feature/table-registry` | L (~18h) | Medium | architect |
+| FEATURE-023 | [A way past a refused commit, and a writer lease](FEATURE-023-refused-commit-quarantine.md) | 🔵 Planned | `feature/refused-commit-quarantine` | L (~16h) | Medium | architect |
+| FEATURE-024 | [Redaction r3, a residue count per run and the privacy record](FEATURE-024-redaction-r3.md) | 🔵 Planned | `feature/redaction-r3` | L (~14h) | Medium | architect |
 
 **Status legend:** 🔵 Planned · 🟡 In progress · 🟢 Complete · 🔴 Blocked · ⚪ Superseded
+
+FEATURE-014 is not in this table: its plan was dropped before review and lives only on a parked
+branch. FEATURE-015 to FEATURE-024 come from the architecture review of 2026-11-22 and are numbered
+in the order they are meant to land; each plan's Dependencies section says why.
 
 ## Branch conventions
 
