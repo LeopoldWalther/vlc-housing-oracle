@@ -21,7 +21,7 @@ python -m src.silver.rebuild --landing <dir-or-s3://lake-bucket/landing/v3> --ca
 
 | Mode | What it does |
 | --- | --- |
-| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six. Given `--census-sections`, it also recomputes `listing_location` from Silver's whole `listing` and the vintage's polygons and replaces it. Given `--text-labels`, it also recomputes `listing_text_label` from Silver's whole `listing` and `listing_text` and the stored answers and replaces it. Then it records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. |
+| `incremental` (default) | Pending runs = landing's commits minus the ingest log. Rebuilds every day those runs touch from every run that touches it, upserts the affected rows of `listing` and `listing_text`, recomputes `listing_quality` and `listing_property_group` from Silver's whole `listing`, `feature_pattern` and `listing_feature_label` from Silver's whole `listing` and `listing_text`, `listing_event` from Silver's whole `walk` and `observation`, and `listing_price` from Silver's whole `observation` and `listing_detail`, and replaces all six. Given `--census-sections`, it also recomputes `listing_location` from Silver's whole `listing` and the vintage's polygons and replaces it. Given `--text-labels`, it also recomputes `listing_text_label` from Silver's whole `listing` and `listing_text` and the stored answers and replaces it. Then it records the runs in the ingest log. Nothing pending prints `nothing pending` and writes nothing. Before either, it refuses with exit code 3 when the ingest log holds another `transformation_version` or `listing_text` another redaction version than the code: run a backfill. |
 | `backfill` | Treats every commit as pending and rewrites all tables whole. This is the only path that may add a new column to an existing table, and the way a new `transformation_version` reaches history. |
 
 `--metrics` publishes `PendingRuns` (runs still pending when the command ends: 0 on success) to
@@ -68,8 +68,9 @@ The `listing_location` line appears only for a run given `--census-sections`, th
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Every table and the ingest log committed, or nothing was pending. |
-| 1 | Refused: landing breaks the contract (`LandingContractError`), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet), or the census-section vintage cannot be read or fails its check (`ReferenceDataError`), or a stored answer lacks a column (`StoredAnswerError`). The message names a table, a run and a count, or the vintage's path and its defect, never a value. |
+| 1 | Failed: an error the command does not handle, such as a read of S3 that failed for the network or a permission, ends with Python's traceback. In AWS the queue retries it, up to three starts. |
 | 2 | Usage error, for example a `--landing` path that is not a directory. |
+| 3 | Refused: landing breaks the contract (`LandingContractError`: a missing or non-Parquet file, other columns, another row count or other days than its commit names), or a table's columns no longer match its Iceberg schema (`SilverSchemaError`, for example an incremental run over tables a backfill has not migrated yet), or the census-section vintage is missing, is not Parquet or fails its check (`ReferenceDataError`), or a stored answer lacks a column (`StoredAnswerError`), or an incremental run meets tables of another rule or redaction version (`BackfillRequired`). One line on stderr, `Silver run refused: <message>`, names a table, a run, a count, days, versions or the vintage's path and its defect, never a value; when another error caused it, ` [cause: <type>]` follows, never that error's text. A refusal is not retried: the same input would be refused again. |
 
 The first run into new, empty tables also prints PyIceberg's `UserWarning: Delete operation did
 not match any records`; it is harmless.
@@ -746,6 +747,12 @@ was. Keep `--text-labels`: a backfill without it leaves `listing_text_label` as 
 
 Messages queued meanwhile stay in the queue and run once the mapping is enabled again.
 
+**A new rule or redaction version.** Deploy the image that carries it first, then run the
+backfill above. Incremental starts in between are refused with exit code 3, write nothing and mail
+once each; disabling the mapping as above avoids them. Finish a started backfill under the same
+image: one that stopped before its ingest log leaves the old versions in the log, so incremental
+runs stay refused until a backfill completes.
+
 ### The equality check
 
 After a backfill, sync the same landing and compare every table's row count, and the ingest log
@@ -756,8 +763,8 @@ finishes, so both see the same commits. Compare counts only; never print rows of
 
 | Signal | Fires when | First step |
 | --- | --- | --- |
-| Task-failed rule | A Silver or labeller task stopped with a non-zero exit code or without its container exiting. | Read `/ecs/vlc-housing-silver`, stream prefix `silver/` or `labeller/`. Silver's exit 1 names the refused table and run; the labeller's is explained [above](#the-labeller-command). A failed labeller is not retried: the next succeeded Silver task starts it again. |
-| `vlc-housing-silver-dead-letter` | A message reached the dead-letter queue: three starts in a row failed. | See below. |
+| Task-failed rule | A Silver or labeller task stopped with a non-zero exit code or without its container exiting. | Read `/ecs/vlc-housing-silver`, stream prefix `silver/` or `labeller/`. Silver's exit 3 is a refusal: its line names the table and run, the days, or the versions; it is not retried, so every start that meets the same defect mails once. Silver's exit 1 is a failure with a traceback; the queue retries it. The labeller's codes are explained [above](#the-labeller-command). A failed labeller is not retried: the next succeeded Silver task starts it again. |
+| `vlc-housing-silver-dead-letter` | A message reached the dead-letter queue: three starts in a row failed (exit 1, or a task that never ran). A refused run never reaches it. | See below. |
 | `vlc-housing-silver-pending-runs` | `PendingRuns` stayed above 0 for six hours. | Check the consumer log `/aws/lambda/vlc-housing-silver-consumer` and the last task log. |
 | `vlc-housing-silver-unknown-feature-patterns` | A run found a feature wording that is not in the registry. | Read `feature_pattern` for rows with a null `target` and add them to `src/silver/feature_patterns.py` (see [`feature_pattern`](#feature_pattern)). The alarm clears with the first run after the image with the new registry is deployed; runs with nothing pending leave its state unchanged. |
 
@@ -767,7 +774,9 @@ The dead-letter queue is a circuit breaker, not a store of work: its messages ca
 because the pending runs are still pending in landing. **Never redrive it.**
 
 1. Read the last task's log and the consumer's log.
-2. Fix the cause (a contract breach in landing, a schema change that needs a backfill, an image).
+2. Fix the cause (an image that cannot start, a read that keeps failing, a run longer than the
+    consumer can wait for). A contract breach or a version that needs a backfill is a refusal
+    (exit 3) and never lands here.
 3. Purge the dead-letter queue:
     `aws sqs purge-queue --queue-url "$(aws sqs get-queue-url --queue-name vlc-housing-silver-dead-letter.fifo --query QueueUrl --output text)"`.
 4. Queue one run, or wait for the next commit or the catch-up; it processes everything pending.
