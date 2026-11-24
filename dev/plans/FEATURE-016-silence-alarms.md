@@ -30,8 +30,9 @@ claim below was checked against the code on that day.
         (`queue.tf:22`, `:25`). Nothing can stop a task: the consumer has no `StopTask` right
         (`queue.tf:85-106`) and the task has no deadline (`ecs.tf:171-218`).
     - A run reports through print lines and two custom metrics (`rebuild.py:875-896`,
-        `:899-919`); the log is kept 30 days (`ecs.tf:46-49`). No budget exists in `infra/silver/`;
-        the account has one for all its projects, made by hand outside Terraform. This stack
+        `:899-919`); the log is kept 30 days (`ecs.tf:46-49`). No budget exists in `infra/silver/`,
+        and since 2026-11-23 none in the account: its one hand-made budget for all projects
+        was deleted that day by the owner's decision, in favour of one per project. This stack
         tags its resources `project = "vlc-housing-oracle"` (`providers.tf:13-19`); the
         acquisition stack uses another tag key and value.
     - No test reads `infra/`; CI runs `terraform fmt -check` and `validate`
@@ -99,8 +100,9 @@ claim below was checked against the code on that day.
 - **Assumption:** tagged resources carry nearly all of the platform's cost. — **Evidence:**
     unvalidated. A cost-allocation tag counts from its activation on, shows after about a day,
     and never covers what cannot be tagged (some data transfer and request charges). — **If
-    wrong:** the project budget under-reports; that is why the account-wide budget stays until
-    the two have been compared for a full month (see Open questions).
+    wrong:** the project budget under-reports, and since the account-wide budget is gone nothing
+    else mails for untagged cost; the success criterion compares the budget's figure with the
+    bill after one full month.
 - **Assumption:** `ApproximateAgeOfOldestMessage` is reported while a message waits behind a
     disabled mapping. — **Evidence:** unvalidated; the drill of 4.3 shows it. — **If wrong:**
     the heartbeat still fires within two to three days.
@@ -303,12 +305,11 @@ claim below was checked against the code on that day.
     window and correct the text? Recommendation: end it, at 1,800 s, twenty times the longest run
     measured; a hung task otherwise costs more per day than the platform per month.
 - **Question (owner, before 3.3):** the amount. The account stood at $8.33 on 2026-11-23
-    against its hand-made limit of $5, cause unknown. Recommendation: read the bill by service
-    first, then set this budget to about twice the platform's real monthly cost.
-- **Question (owner, after one full month of 4.2):** delete the hand-made account-wide budget,
-    as the owner intends? Recommendation: delete it only once every project in the account has
-    its own budget and the figures agree; until then it is the only alarm for untagged cost.
-    It costs nothing to keep.
+    against the $5 limit of the budget deleted that day, cause unknown. Recommendation: read
+    the bill by service first, then set this budget to about twice the platform's real monthly
+    cost.
+- **Risk:** the account has no cost alarm from 2026-11-23 until task 4.2 is applied. —
+    *Mitigation:* none in this plan; a budget made by hand in the meantime is deleted in 4.2.
 - **Question (owner, before 4.2 and 4.3):** approve the apply and the drill, which holds Silver
     back for up to three days in an idle part of the week. Recommendation: both; the drill is
     the only proof that silence mails.
@@ -324,4 +325,4 @@ claim below was checked against the code on that day.
     bullets three and six). Findings checked against the code; A1 corrected in one point.
 - **2026-11-23** — A read of the account showed a hand-made account-wide budget. The owner
     decided on budgets per project: this plan declares the platform's, for both repositories,
-    filtered by tag (task 3.3).
+    filtered by tag (task 3.3). The account-wide budget was deleted the same day.
