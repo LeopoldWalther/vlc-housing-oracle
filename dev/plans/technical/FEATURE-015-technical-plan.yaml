@@ -587,7 +587,7 @@ technical_plan:
         value) to the owner and wait for a decision.
         Record the outcome in the implementation note: exit code, number of runs and files
         checked, the two versions. Delete the local copy afterwards.
-      status: "not_started"
+      status: "done"
       complexity: "low"
       estimated_hours: 0.75
       depends_on: ["4.1"]
