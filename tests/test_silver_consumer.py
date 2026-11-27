@@ -4,6 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
+from src.silver import consumer, rebuild
 from src.silver.consumer import TaskFailed, TaskStillRunning, handler
 
 CONSUMER = Path(__file__).resolve().parents[1] / "src" / "silver" / "consumer.py"
@@ -102,6 +103,18 @@ class TestConsumer(unittest.TestCase):
     def test_a_non_zero_exit_raises_so_the_batch_is_redelivered(self) -> None:
         with self.assertRaisesRegex(TaskFailed, "exit code 1"):
             run(FakeEcs(running=[], states=[stopped(1)]))
+
+    def test_a_refused_run_returns_and_is_not_redelivered(self) -> None:
+        with self.assertLogs(level="INFO") as logged:
+            outcome = run(FakeEcs(running=[], states=[stopped(3)]))
+
+        self.assertEqual(3, outcome["exit_code"])
+        self.assertIn("task", outcome)
+        self.assertEqual(1, len(logged.output))
+        self.assertIn("refused its run (exit code 3); not retried", logged.output[0])
+
+    def test_the_refused_exit_code_is_the_commands(self) -> None:
+        self.assertEqual(rebuild.EXIT_REFUSED, consumer.EXIT_REFUSED)
 
     def test_a_task_that_never_started_raises(self) -> None:
         with self.assertRaisesRegex(TaskFailed, "CannotPullContainerError"):

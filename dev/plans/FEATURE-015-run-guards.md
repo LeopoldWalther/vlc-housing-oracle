@@ -1,7 +1,7 @@
 # FEATURE-015 — Run guards: a Silver run refuses what it cannot do correctly
 
-**Status:** 🔵 Planned · **Effort:** M (~9h) · **Priority:** High
-**Branch root:** `feature/run-guards` · **Created:** 2026-11-22 · **Updated:** 2026-11-22
+**Status:** 🟡 In progress · **Effort:** M (~9h) · **Priority:** High
+**Branch root:** `feature/run-guards` · **Created:** 2026-11-22 · **Updated:** 2026-11-23
 
 > Authored by `architect`. Reviewed by `reviewer` (see `dev/reviews/REVIEW-FEATURE-015.md`).
 > Implemented by `implementer` from `dev/plans/technical/FEATURE-015-technical-plan.yaml`.
@@ -259,3 +259,11 @@ three. One-off: one read of landing for the dry run and one apply, under $0.10.
 
 - **2026-11-22** — Plan created from the architecture review of 2026-11-22 (A2 Silver half, B8,
     F fifth bullet). Spike: DuckDB 1.5.6 raises `InvalidInputException` for a non-Parquet file.
+- **2026-11-23** — Review approved with corrections M1 to M6, which the technical plan carries:
+    the guard is one function called by `process_landing` and by `main` (so a start with
+    nothing pending is covered); commits are listed before the guard, so its refusal still
+    publishes `PendingRuns`; `status_code` is read with `getattr`, because a rebuilt check found
+    no such attribute on a hand-made `HTTPException`; a refused dry run goes back to the owner
+    instead of weakening the days check; the mail legend keeps the labeller's exit code 1; a
+    refusal line prints the type of its cause, never its text. The three questions are answered
+    as recommended.

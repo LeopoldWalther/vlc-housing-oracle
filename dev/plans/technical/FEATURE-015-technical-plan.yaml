@@ -1,0 +1,701 @@
+# Technical plan for FEATURE-015 — Run guards: a Silver run refuses what it cannot do correctly.
+# Emitted by the reviewer with the approval of 2026-11-23. It carries corrections M1 to M6 and
+# L1 of the review. Task statuses here are the source of truth for progress.
+
+technical_plan:
+  metadata:
+    for_feature: "FEATURE-015"
+    created_by: "reviewer_agent"
+    created_at: "2026-11-23"
+    version: "1.0"
+    total_tasks: 10
+    estimated_hours: "10.5"
+    risk_level: "medium"
+    critical_path: ["1.1", "1.2", "2.1", "2.2", "3.1", "3.2", "3.3", "4.1", "4.2", "4.3"]
+    feature_plan: "dev/plans/FEATURE-015-run-guards.md"
+    reviewed_plan: "dev/reviews/REVIEW-FEATURE-015.md"
+
+  validation:
+    required_checks:
+      - "python-lint-and-test"
+      - "terraform-validate"
+      - "workflow-consistency"
+    # No coverage threshold is configured.
+    min_coverage: null
+    baseline_commands:
+      - "pip install -r requirements.txt -r requirements-dev.txt"
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+    final_commands:
+      - "python -m unittest discover -s tests -t . -v"
+      - "python dev/tools/check_leaks.py"
+      - "python dev/tools/validate_workflow.py"
+      - "ruff check src tests dev && ruff format --check src tests dev"
+      - "terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+
+  conventions: |
+    - No rule changes what it writes. TRANSFORMATION_VERSION stays "silver-v1", REDACTION_VERSION
+      stays "r2", no table gains a column, and there is no backfill in AWS.
+    - Names, all in src/silver/rebuild.py unless said otherwise:
+        class BackfillRequired(Exception)       the tables were written by another version
+        EXIT_REFUSED = 3                        the command's exit code for a refusal
+        require_current_versions(catalog, ingested) -> None
+      src/silver/ingest.py: IngestedRun gains the field transformation_version: str, last.
+      src/silver/landing.py: read_defect(error: duckdb.Error) -> str | None.
+      src/silver/consumer.py: its own constant EXIT_REFUSED = 3 (the file is packaged alone and
+      cannot import the command); a test pins the two constants equal.
+    - require_current_versions reads the module constants when it is called, so a test can patch
+      src.silver.rebuild.TRANSFORMATION_VERSION and REDACTION_VERSION. It raises
+      BackfillRequired when
+        (a) any run in `ingested` carries another transformation_version than the constant; the
+            message names the versions found (sorted, comma separated), the code's version and
+            the words "run --mode backfill";
+        (b) the table listing_text exists, has a current snapshot, and that snapshot's summary
+            has another redaction_version than the constant, or none; the message names the
+            version found, or "unknown", the code's version and "run --mode backfill".
+      An empty log passes (a). A missing listing_text table, or one without a snapshot, passes
+      (b). The function writes nothing and reads no row of listing_text.
+    - Where it is called (review M1): in process_landing, in incremental mode only, right after
+      the ingest log is read and before pending(); in main, in incremental mode only, inside the
+      reporting block, after the commits are listed and before the "nothing pending" branch. A
+      backfill never calls it.
+    - main, inside the reporting block and in this order (review M2): read the ingest log (not
+      for a backfill), list the commits, set the pending count, call the guard, then either
+      print "nothing pending" or run. The count starts as None; the metrics are published in the
+      finally clause only when --metrics is given and the count is not None. So a refusal while
+      listing publishes no PendingRuns, and a refusal by the guard publishes the number of
+      pending runs.
+    - Exit codes of the command: 0 done or nothing pending; 1 failed (any unhandled error, with
+      Python's traceback); 2 usage; 3 refused, for LandingContractError, SilverSchemaError,
+      ReferenceDataError, StoredAnswerError and BackfillRequired.
+    - The refusal line on stderr (review M6): "Silver run refused: <message>", followed by
+      " [cause: <qualified type name>]" when the error has a __cause__, for example
+      "[cause: duckdb.IOException]". Never any text of the cause. Messages name tables, runs,
+      days, versions and paths, never another row value.
+    - Days of a pending file. register_landing_v3 gains the keyword-only parameter
+      expected_dates: Mapping[str, Mapping[str, Collection[date]]] | None = None, keyed by run
+      id and then table, given by process_landing for the pending runs from their commits. For
+      every run in expected_counts it checks the file of each of the four tables, also of a
+      table that runs_by_table does not name for that run. The views stay over runs_by_table
+      exactly as today. _check_v3_file compares the file's distinct observed_date values with
+      the commit's days of that table in the query that counts its rows:
+        a day in the file that the commit does not name ->
+          "landing table <table>: run <run_id> holds rows of <days> that its commit does not name"
+        a day the commit names that the file does not hold ->
+          "landing table <table>: run <run_id> commit names <days> that its file does not hold"
+      Days are ISO dates, sorted, comma separated; a null observed_date is written "null" and
+      counts as a day the commit does not name. Files of ingested runs are not checked again.
+    - Read errors (review M3, L1). read_defect returns
+        "is not a Parquet file"  for a duckdb.InvalidInputException,
+        "has no file"            for a duckdb.HTTPException whose
+                                 getattr(error, "status_code", None) == 404,
+        None                     for every other error.
+      At both sites (landing._check_v3_file and rebuild.read_census_sections) the handler catches
+      duckdb.Error, raises the site's refusal with that text from the error when read_defect
+      returns one, and otherwise re-raises the original with a bare `raise`. read_census_sections
+      gets the same existence check for a local path that _check_v3_file has, with the message
+      "census sections <file> has no file"; its other checks (columns, no row, several vintages)
+      stay.
+    - The consumer: exit code 3 returns {"task": <arn>, "exit_code": 3} after one log line
+      "Silver task <arn> refused its run (exit code 3); not retried". Every other non-zero exit
+      and a task that never ran still raise TaskFailed.
+    - The labeller's exit codes do not change (review M5); FEATURE-017 owns them.
+    - Tests use the synthetic landing only. A commit or a file is altered inside the test's
+      temporary tree. No test needs a network, a cloud account or a paid service.
+    - All repository artifacts are in English.
+
+  tasks:
+    - id: "1.1"
+      title: "Rule-version guard"
+      description: |
+        IngestedRun reports the transformation_version of its log row. Add BackfillRequired and
+        require_current_versions with check (a) and call it in process_landing as the
+        conventions say. Check (b) is task 1.2.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: []
+      branch: "feature/run-guards/1.1-rule-version-guard"
+      commit_message: "feat(silver): an incremental run is refused under another rule version"
+      acceptance_criteria:
+        - "ingested_runs returns the transformation_version of every row"
+        - "An incremental process_landing under a patched TRANSFORMATION_VERSION raises BackfillRequired naming both versions and 'backfill', and the current snapshot id of every table is unchanged"
+        - "A backfill under the patched version passes, and so does the next incremental run"
+        - "A backfill under the patched version whose record_ingested raises leaves the next incremental run refused"
+        - "A catalog without an ingest log is not refused"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            First, in tests/test_silver_ingest.py, extend
+            test_recorded_runs_come_back_with_their_days_and_start to assert
+            run.transformation_version == "silver-v1".
+            Then a new class TestVersionGuard in tests/test_silver_incremental.py with a fresh
+            SqlCatalog and a synthetic landing: process every commit but the last incrementally,
+            record every table's current snapshot id, patch
+            src.silver.rebuild.TRANSFORMATION_VERSION to "silver-v2", process incrementally and
+            assert BackfillRequired with "silver-v1", "silver-v2" and "backfill" in the message
+            and unchanged snapshot ids. Add the three cases of the acceptance criteria; the
+            failing backfill patches src.silver.rebuild.record_ingested to raise RuntimeError.
+          command: "python -m unittest tests.test_silver_ingest tests.test_silver_incremental -v"
+          expected_failure: "AttributeError: 'IngestedRun' object has no attribute 'transformation_version', then ImportError: cannot import name 'BackfillRequired' from 'src.silver.rebuild'"
+        green:
+          change: "The field on IngestedRun, the exception, the function with check (a) and its call in process_landing."
+          command: "python -m unittest tests.test_silver_ingest tests.test_silver_incremental -v"
+        refactor:
+          change: "process_landing's docstring names BackfillRequired beside the other refusals."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/ingest.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_ingest.py"
+        - "tests/test_silver_incremental.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/sql/**"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/ingest.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_ingest.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "1.2"
+      title: "Redaction-version guard"
+      description: |
+        Add check (b) to require_current_versions: the current snapshot summary of listing_text.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["1.1"]
+      branch: "feature/run-guards/1.2-redaction-version-guard"
+      commit_message: "feat(silver): an incremental run is refused under another redaction version"
+      acceptance_criteria:
+        - "An incremental process_landing under a patched REDACTION_VERSION raises BackfillRequired naming 'r2', the patched version and 'backfill', and no snapshot id changes"
+        - "A listing_text whose current snapshot summary has no redaction_version is refused with 'unknown' in the message"
+        - "A backfill under the patched version passes, and so does the next incremental run"
+        - "A catalog without listing_text is not refused"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            In TestVersionGuard: the case of task 1.1 with src.silver.rebuild.REDACTION_VERSION
+            patched to "r3". For the unknown case, overwrite listing_text through the catalog
+            with its own rows and no snapshot properties, then process incrementally.
+          command: "python -m unittest tests.test_silver_incremental.TestVersionGuard -v"
+          expected_failure: "AssertionError: BackfillRequired not raised (the run returns and listing_text holds rows of r2 and r3)"
+        green:
+          change: "Check (b) in require_current_versions."
+          command: "python -m unittest tests.test_silver_incremental.TestVersionGuard -v"
+        refactor:
+          change: "The two checks read as two short blocks of one function; no helper class."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        # Added during implementation: the fixture of FEATURE-001's tables wrote a snapshot
+        # without redaction_version, which FEATURE-001 itself always stamped; the guard refused
+        # it before the schema check the test pins. The fixture now stamps the current version.
+        - "tests/test_silver_rebuild.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/sql/**"
+        - "src/silver/sink.py"
+        - "src/silver/ingest.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_incremental.py"
+        - "tests/test_silver_rebuild.py"
+
+    - id: "2.1"
+      title: "A pending file's days equal its commit's"
+      description: |
+        register_landing_v3 takes expected_dates and _check_v3_file compares the file's days with
+        the commit's, as the conventions say. process_landing passes the pending commits' days.
+        Only files that are opened today are checked in this task.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["1.2"]
+      branch: "feature/run-guards/2.1-days-of-a-pending-file"
+      commit_message: "feat(silver): a landing file with other days than its commit is refused"
+      acceptance_criteria:
+        - "A file holding a day its commit does not name is refused, naming table, run and day, in both modes"
+        - "A commit naming a day its file does not hold is refused, naming table, run and day"
+        - "A null observed_date in a pending file is refused as 'null'"
+        - "process_landing over a commit with one day removed from observed_dates.observation raises LandingContractError and writes no table"
+        - "The message holds no other row value; register_landing_v3 without expected_dates behaves as today"
+      tdd:
+        red:
+          test_file: "tests/test_silver_landing_v3.py"
+          change: |
+            Unit cases beside test_a_row_count_that_disagrees_with_the_commit_is_refused: call
+            register_landing_v3 with expected_dates that lack one of the file's days, with
+            expected_dates that hold a day the file lacks, and with a file rewritten to hold a
+            null observed_date. In tests/test_silver_incremental.py: copy the synthetic landing,
+            remove one day from observed_dates.observation in one commit's JSON, process, and
+            assert LandingContractError naming "observation", the run id and the day, with no
+            table in the catalog.
+          command: "python -m unittest tests.test_silver_landing_v3 tests.test_silver_incremental -v"
+          expected_failure: "TypeError: register_landing_v3() got an unexpected keyword argument 'expected_dates'; the process_landing case fails with 'LandingContractError not raised'"
+        green:
+          change: "The parameter, the comparison in the counting query, and the argument in process_landing."
+          command: "python -m unittest tests.test_silver_landing_v3 tests.test_silver_incremental -v"
+        refactor:
+          change: "The docstring of register_landing_v3 names the days check; the count and the days come from one query."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/commits.py"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "2.2"
+      title: "Every pending file is checked"
+      description: |
+        For every pending run, the file of each of the four tables is checked, also when the
+        commit names no day for that table and the run is therefore in no run set. The views
+        stay over the named runs.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["2.1"]
+      branch: "feature/run-guards/2.2-every-pending-file"
+      commit_message: "feat(silver): the file of every table of a pending run is checked"
+      acceptance_criteria:
+        - "A commit with no day and row count 0 for walk over a walk file with rows is refused"
+        - "A pending run whose file of one table is missing is refused, naming table and run, also when its commit names no day for that table"
+        - "The landing_<table> views hold exactly the runs named in runs_by_table"
+        - "The incremental-equals-backfill tests stay green without a change"
+      tdd:
+        red:
+          test_file: "tests/test_silver_incremental.py"
+          change: |
+            Copy the synthetic landing; in one commit's JSON set observed_dates.walk to [] and
+            row_counts.walk to 0, leave its walk file as it is, and process. Assert
+            LandingContractError naming "walk" and the run id. In
+            tests/test_silver_landing_v3.py: a run present in expected_counts and absent from
+            runs_by_table for one table, whose file of that table is deleted, is refused, and
+            test_exactly_the_named_runs_are_registered still holds.
+          command: "python -m unittest tests.test_silver_landing_v3 tests.test_silver_incremental -v"
+          expected_failure: "AssertionError: LandingContractError not raised (the file is never opened)"
+        green:
+          change: "register_landing_v3 checks the four files of every run in expected_counts."
+          command: "python -m unittest tests.test_silver_landing_v3 tests.test_silver_incremental -v"
+        refactor:
+          change: "One loop names the files to check and one names the files of the views."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/landing.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/commits.py"
+        - "src/silver/rebuild.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/landing.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "3.1"
+      title: "Read errors stay read errors"
+      description: |
+        read_defect in landing.py, used by _check_v3_file and read_census_sections as the
+        conventions say. read_census_sections gets the local existence check.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.25
+      depends_on: ["2.2"]
+      branch: "feature/run-guards/3.1-read-errors"
+      commit_message: "fix(silver): a failed read is no longer reported as a contract violation"
+      acceptance_criteria:
+        - "A duckdb.IOException while a landing file is read propagates as that exception"
+        - "A duckdb.HTTPException carrying status_code 404 is refused as 'has no file'; one without the attribute propagates"
+        - "A landing file of garbage bytes is refused as 'is not a Parquet file'"
+        - "The same three hold for read_census_sections, and a missing local vintage is refused as 'has no file' naming the path"
+        - "No refusal message holds text of the DuckDB error"
+      tdd:
+        red:
+          test_file: "tests/test_silver_landing_v3.py"
+          change: |
+            Unit tests of read_defect for the three classes and for an HTTPException without the
+            attribute (set status_code on the instance for the 404 case). A landing case: a
+            pending run's file overwritten with garbage bytes is refused with "is not a Parquet
+            file". A landing case with a connection double whose sql() raises
+            duckdb.IOException("boom"): the IOException propagates. The same cases for
+            read_census_sections, called directly, in tests/test_silver_incremental.py beside
+            the existing ReferenceDataError cases.
+          command: "python -m unittest tests.test_silver_landing_v3 -v"
+          expected_failure: "ImportError: cannot import name 'read_defect' from 'src.silver.landing'; the garbage-bytes case fails today with an uncaught duckdb.InvalidInputException and the IOException case with LandingContractError"
+        green:
+          change: "read_defect and the two handlers; the existence check in read_census_sections."
+          command: "python -m unittest tests.test_silver_landing_v3 -v"
+        refactor:
+          change: "Both handlers have the same three lines; no wrapper exception."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/sink.py"
+        - "src/silver/commits.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/landing.py"
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_landing_v3.py"
+        - "tests/test_silver_incremental.py"
+
+    - id: "3.2"
+      title: "Exit code 3, and the guard in the command"
+      description: |
+        main as the conventions describe it: EXIT_REFUSED, the log read, the commit listing and
+        the guard inside the reporting block, the refusal line with the cause's type, and the
+        metric published only when the pending count is known.
+      status: "done"
+      complexity: "medium"
+      estimated_hours: 1.5
+      depends_on: ["3.1"]
+      branch: "feature/run-guards/3.2-exit-code-refused"
+      commit_message: "feat(silver): a refused run exits 3 and a failed run exits 1"
+      acceptance_criteria:
+        - "The three existing refusal tests expect exit code 3"
+        - "A commit of another landing version exits 3 without a traceback and publishes no PendingRuns"
+        - "A version mismatch exits 3 with 'backfill' on stderr, also when nothing is pending, and publishes PendingRuns with the number of pending runs"
+        - "A refusal with a cause prints '[cause: <type>]' and no text of the cause"
+        - "A patched duckdb.IOException exits 1 with a traceback"
+        - "A backfill is not refused by the guard"
+      tdd:
+        red:
+          test_file: "tests/test_silver_cli.py"
+          change: |
+            Change the expected code of the three refusal tests (today's lines 179, 245 and 305)
+            to 3 and rename the census test to ..._exits_3_naming_the_path. Add: a commit JSON
+            whose version is "v4" (exit 3, no "Traceback", an empty list of published metrics);
+            a run after src.silver.rebuild.TRANSFORMATION_VERSION is patched, once with pending
+            commits and once with none (exit 3, "backfill" on stderr, PendingRuns equal to the
+            pending count); a refusal raised from a cause (stderr holds "[cause: " and not the
+            cause's message); process_landing patched to raise duckdb.IOException("boom")
+            (exit 1); --mode backfill under the patched version (exit 0).
+          command: "python -m unittest tests.test_silver_cli -v"
+          expected_failure: "AssertionError: 3 != 1 in the three changed tests; the other-version commit ends in an uncaught LandingContractError"
+        green:
+          change: "The restructured main and EXIT_REFUSED."
+          command: "python -m unittest tests.test_silver_cli -v"
+        refactor:
+          change: "main's docstring lists the four exit codes; the refusal classes are one tuple constant."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+        - "python dev/tools/check_leaks.py"
+      allowed_files:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/consumer.py"
+        - "src/silver/sink.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/rebuild.py"
+        - "tests/test_silver_cli.py"
+
+    - id: "3.3"
+      title: "The consumer does not retry a refusal"
+      description: "Exit code 3 returns normally from the consumer, with one log line."
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["3.2"]
+      branch: "feature/run-guards/3.3-consumer-does-not-retry"
+      commit_message: "feat(silver): the queue consumer does not retry a refused run"
+      acceptance_criteria:
+        - "A task stopped with exit code 3 returns {'task': <arn>, 'exit_code': 3}"
+        - "Exit code 1 and a task that never ran still raise TaskFailed"
+        - "The consumer's EXIT_REFUSED equals the command's"
+        - "The consumer still imports only the standard library and boto3"
+      tdd:
+        red:
+          test_file: "tests/test_silver_consumer.py"
+          change: |
+            test_a_refused_run_returns_and_is_not_redelivered: run(FakeEcs(running=[],
+            states=[stopped(3)])) returns a mapping with exit_code 3. A second test asserts
+            src.silver.consumer.EXIT_REFUSED == src.silver.rebuild.EXIT_REFUSED.
+          command: "python -m unittest tests.test_silver_consumer -v"
+          expected_failure: "TaskFailed: ... stopped with exit code 3"
+        green:
+          change: "The constant, one branch in _outcome and the log line."
+          command: "python -m unittest tests.test_silver_consumer -v"
+        refactor:
+          change: "The module docstring says which exit is retried."
+          command: "python -m unittest discover -s tests -t . -v && ruff check src tests dev && ruff format --check src tests dev"
+      validation_commands:
+        - "python -m unittest discover -s tests -t . -v"
+        - "ruff check src tests dev && ruff format --check src tests dev"
+      allowed_files:
+        - "src/silver/consumer.py"
+        - "tests/test_silver_consumer.py"
+      forbidden_files:
+        - "infra/**"
+        - "contracts/**"
+        - "src/synthetic/**"
+        - "src/enrichment/**"
+        - "src/silver/rebuild.py"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "src/silver/consumer.py"
+        - "tests/test_silver_consumer.py"
+
+    - id: "4.1"
+      title: "Documents and the mail legend"
+      description: |
+        docs/silver-rebuild.md: the command's exit-code table gains 3 and redefines 1; the modes,
+        the alarm table and the dead-letter steps say that a refusal is not retried and mails
+        once per start; the backfill section says that a new rule or redaction version is
+        deployed first and then backfilled, that incremental starts in between are refused, and
+        that a started backfill is finished under the same image. infra/silver/alerts.tf: the
+        legend says per task what a code means (review M5): Silver 1 failed and is retried up to
+        three times, Silver 3 refused and not retried, labeller 1 as today; 137, 139 and none
+        stay. docs/adr/0002-incremental-processing.md, decision 5: one sentence that an
+        incremental run under another version is refused. docs/architecture.html: the limit
+        "No guard on rule versions" is removed; no other place of the page names it.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 1.0
+      depends_on: ["3.3"]
+      branch: "feature/run-guards/4.1-docs"
+      commit_message: "docs(silver): exit code 3, the version guard and the days check"
+      acceptance_criteria:
+        - "The runbook's exit-code table lists 0, 1, 2 and 3 with the meanings of the conventions"
+        - "The mail legend keeps the labeller's meaning of exit code 1"
+        - "No document says that a refused Silver run is retried"
+        - "terraform fmt -check and terraform validate pass; the leak guard and the workflow validator pass"
+      tdd: null
+      validation_commands:
+        - "terraform -chdir=infra/silver fmt -check && terraform -chdir=infra/silver validate"
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+        - "python -m unittest discover -s tests -t . -v"
+      allowed_files:
+        - "docs/silver-rebuild.md"
+        - "docs/adr/0002-incremental-processing.md"
+        - "docs/architecture.html"
+        - "infra/silver/alerts.tf"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "contracts/**"
+        - "infra/silver/*.tfvars"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "docs/silver-rebuild.md"
+        - "docs/adr/0002-incremental-processing.md"
+        - "docs/architecture.html"
+        - "infra/silver/alerts.tf"
+
+    - id: "4.2"
+      title: "Dry run on real landing (operator, with approval, before the final pull request)"
+      description: |
+        Needs the owner's explicit approval in chat, upper bound $0.10: one read of landing v3
+        from the lake to a directory outside the repository, as the runbook's equality check
+        does. With the integration branch checked out, run a local backfill of that copy into a
+        fresh local catalog. It must exit 0. Then read, as counts and versions only: the
+        distinct transformation_version values of the real ingest log and the redaction_version
+        of listing_text's current snapshot summary; they must be silver-v1 and r2.
+        Stop rule (review M4): if the backfill is refused, or a version differs, do not change
+        any rule and do not open the final pull request. Report table, run id and days (no row
+        value) to the owner and wait for a decision.
+        Record the outcome in the implementation note: exit code, number of runs and files
+        checked, the two versions. Delete the local copy afterwards.
+      status: "done"
+      complexity: "low"
+      estimated_hours: 0.75
+      depends_on: ["4.1"]
+      branch: "feature/run-guards/4.2-dry-run-record"
+      commit_message: "docs(plans): FEATURE-015 dry run on real landing"
+      acceptance_criteria:
+        - "The local backfill of real landing v3 with this feature exits 0, or the stop rule was followed"
+        - "The real ingest log holds only silver-v1 and listing_text's current snapshot says r2"
+        - "The implementation note records counts and versions only"
+        - "No real data, identifier, bucket or account name enters the repository"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-015-run-guards.md"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "infra/**"
+        - "contracts/**"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Delete the local copy and the local catalog; revert the commit"
+      files_to_create:
+        - "dev/plans/implementations/FEATURE-015-run-guards.md"
+      files_to_modify: []
+
+    - id: "4.3"
+      title: "Deployment and first run (operator, with approval)"
+      description: |
+        After the final pull request is merged and its image is built. Needs the owner's
+        explicit approval in chat for the apply, upper bound $0.01: set silver_image to the
+        merged commit's image in the git-ignored variables file and run terraform plan; expect a
+        new revision of the Silver and labeller task definitions with the references to them,
+        the consumer's code and the mail text, nothing else. Apply. No backfill in AWS.
+        Validation: the next Silver run exits 0 (or prints "nothing pending" in a finished
+        week), and no failure mail arrives. Record both in the implementation note and set the
+        feature to complete.
+      status: "not_started"
+      complexity: "low"
+      estimated_hours: 0.5
+      depends_on: ["4.2"]
+      branch: "feature/run-guards/4.3-first-run-record"
+      commit_message: "docs(plans): FEATURE-015 deployment and first run"
+      acceptance_criteria:
+        - "terraform plan showed only the expected changes before the apply"
+        - "The first Silver run after the deployment exits 0"
+        - "The implementation note records the image's commit, the run's outcome and the date"
+      tdd: null
+      validation_commands:
+        - "python dev/tools/check_leaks.py"
+        - "python dev/tools/validate_workflow.py"
+      allowed_files:
+        - "dev/plans/implementations/FEATURE-015-run-guards.md"
+        - "dev/plans/FEATURE-015-run-guards.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-015-technical-plan.yaml"
+      forbidden_files:
+        - "src/**"
+        - "tests/**"
+        - "contracts/**"
+        - "infra/silver/*.tf"
+      can_run_parallel_with: []
+      reversible: true
+      rollback: "Set silver_image back to the previous image and apply; an old consumer retries exit 3 as it retries exit 1; revert the commit"
+      files_to_create: []
+      files_to_modify:
+        - "dev/plans/implementations/FEATURE-015-run-guards.md"
+        - "dev/plans/FEATURE-015-run-guards.md"
+        - "dev/plans/README.md"
+        - "dev/plans/technical/FEATURE-015-technical-plan.yaml"
+
+  git_workflow:
+    base_branch: "main"
+    integration_branch: "feature/run-guards/integration"
+    task_branch_strategy: |
+      Create the integration branch from main and commit the review and this file there first,
+      in one docs commit, together with the review's note in the feature plan. Task 1.1 starts
+      from the integration branch; each later task up to 4.2 starts from the integration branch
+      after its predecessor is merged. The tasks share rebuild.py and landing.py, so none runs
+      in parallel. Task 4.3 starts from main after the final pull request is merged.
+    integration_strategy: |
+      After explicit user approval, merge each verified task branch into the integration branch
+      with --no-ff in the order 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, 4.2, never rewriting
+      history, and run validation.final_commands there. The final pull request goes from the
+      integration branch to main and is opened only after task 4.2 exited 0. Task 4.3's branch
+      goes to main through its own small pull request.
+    commit_strategy: "One focused commit per task, using the task's commit_message"
+    commit_message_format: "<type>(<scope>): <description>"
+    allowed_commit_types: ["feat", "fix", "test", "docs", "chore"]
+    push_policy: "Never push or open a PR without explicit user approval; GitHub-visible activity on weekdays only after 17:00 Europe/Berlin, on weekends at any time"
+    final_pr_title: "feat(silver): run guards for versions, days and refusals"
+    final_pr_description: |
+      Implements FEATURE-015: an incremental Silver run is refused before its first write when
+      the code's rule or redaction version differs from the version that wrote the tables, or
+      when a pending landing file holds other days than its commit names. A refusal exits 3 and
+      is not retried by the queue; a failure exits 1 and is. Read errors are no longer reported
+      as contract violations. No rule changes what it writes: no new transformation_version and
+      no backfill. See dev/reviews/REVIEW-FEATURE-015.md (approved). Deployment is one apply.
+
+  notes:
+    - "Never print, log or commit a real listing id, run id, municipality, bucket or account name; tasks 4.2 and 4.3 output counts, versions and exit codes only."
+    - "infra/silver/*.tfvars hold real values and are gitignored: only silver_image changes, by the operator, in task 4.3."
+    - "Every AWS action and every paid step needs the owner's explicit approval in chat with its upper bound: $0.10 for task 4.2, $0.01 for task 4.3."
+    - "The stop rule of task 4.2 is not optional: a refused dry run goes back to the owner, the days check is not weakened by the Implementer."
+    - "The labeller's exit codes and its mail legend entry stay as they are; FEATURE-017 owns them."
+    - "FEATURE-016 edits main, consumer.py and alerts.tf too and starts after this feature is merged; exit code 124 is reserved for its run-time limit."
+    - "FEATURE-020 must keep redaction_version on the current snapshot of listing_text: a maintenance snapshot without it makes the guard refuse."
+    - "The owner's three questions are answered as the plan recommends (review, Approval criteria); an objection before task 3.2 changes that task only."
+    - "Status-only workflow artifact updates are implicit administrative files, not implementation scope."

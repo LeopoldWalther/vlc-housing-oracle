@@ -92,9 +92,11 @@ resource "aws_cloudwatch_event_target" "task_failed" {
       "Exit code: <exit_code>",
       "Reason: <reason>",
       "",
-      "Exit codes: 1 = Silver: landing, a table schema, the census sections or a stored answer was refused (the log names it); labeller: a stored answer, the model of the label version or the API key was refused, or a collected batch had no succeeded request (the API credit is used up, the key is revoked or the model is refused); 137 = out of memory; 139 = the process crashed; none = the container never started.",
+      "Exit codes of the Silver task: 1 = failed (the log holds the traceback), retried by its queue; 3 = refused: landing, a table schema, the census sections or a stored answer was refused, or the tables need a backfill (the log names it), not retried, so each start that meets the same defect mails once.",
+      "Exit codes of the labeller: 1 = a stored answer, the model of the label version or the API key was refused, or a collected batch had no succeeded request (the API credit is used up, the key is revoked or the model is refused).",
+      "Exit codes of both: 137 = out of memory; 139 = the process crashed; none = the container never started.",
       "Log: CloudWatch log group ${aws_cloudwatch_log_group.silver.name}, stream silver/silver/ or labeller/labeller/ plus the last part of the task ARN.",
-      "Only the Silver task is retried, by its queue, up to three times; after that the dead-letter alarm follows. A failed labeller is not retried: the next succeeded Silver task starts it again. Runbook: docs/silver-rebuild.md.",
+      "Only a failed Silver task is retried, by its queue, up to three times; after that the dead-letter alarm follows. A failed labeller is not retried: the next succeeded Silver task starts it again. Runbook: docs/silver-rebuild.md.",
     ])}\""
   }
 }

@@ -21,7 +21,7 @@ speculative roadmap: add a row only when its top-level plan exists.
 | FEATURE-011 | [Listing location from coordinates: municipality, district and census section](FEATURE-011-listing-location.md) | 🟢 Complete | `feature/listing-location` | M (~11h) | Medium | architect |
 | FEATURE-012 | [Labels read from the description by a language model](FEATURE-012-text-labels.md) | 🟡 In progress | `feature/text-labels` | L (~26h) | Medium | architect |
 | FEATURE-013 | [Property groups move from Gold to Silver](FEATURE-013-property-groups-in-silver.md) — implemented first, before FEATURE-009 to FEATURE-012 | 🟢 Complete | `feature/property-groups-in-silver` | M (~6h) | High | architect |
-| FEATURE-015 | [Run guards: a Silver run refuses what it cannot do correctly](FEATURE-015-run-guards.md) | 🔵 Planned | `feature/run-guards` | M (~9h) | High | architect |
+| FEATURE-015 | [Run guards: a Silver run refuses what it cannot do correctly](FEATURE-015-run-guards.md) | 🟡 In progress | `feature/run-guards` | M (~9h) | High | architect |
 | FEATURE-016 | [Alarms for silence, a run-time limit and run telemetry](FEATURE-016-silence-alarms.md) | 🔵 Planned | `feature/silence-alarms` | M (~10h) | High | architect |
 | FEATURE-017 | [Labeller run safety: a served version, one run at a time, stable answers](FEATURE-017-labeller-run-safety.md) | 🔵 Planned | `feature/labeller-run-safety` | M (~10h) | High | architect |
 | FEATURE-018 | [Feature wordings by digest: the tree no longer quotes the source](FEATURE-018-feature-wording-digests.md) | 🔵 Planned | `feature/feature-wording-digests` | S (~6h) | High | architect |

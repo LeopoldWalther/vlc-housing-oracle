@@ -5,9 +5,14 @@ The SQS FIFO queue has one message group, so this handler never runs twice at on
 timed out or an operator started a backfill, is waited for instead of joined by a second one.
 The message body is never read; the task finds its work by the set difference itself.
 
+A failed task (exit code 1, or one that never ran) raises, so the batch is redelivered and
+retried until the queue moves it to the dead-letter queue. A refused run (exit code 3) returns:
+its input or its tables are wrong, so a retry would be refused again; its alarm mails once.
+
 Packaged as a plain zip: the standard library and boto3 (provided by the Lambda runtime) only.
 """
 
+import logging
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -17,6 +22,11 @@ POLL_SECONDS = 15
 # Raise this long before the Lambda deadline, so the failure is ours and the batch is redelivered
 # rather than lost with a killed invocation.
 DEADLINE_MARGIN_MS = 60_000
+# The Silver command's exit code for a refused run; this zip cannot import the command, so a test
+# pins the two equal.
+EXIT_REFUSED = 3
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TaskFailed(Exception):
@@ -105,6 +115,10 @@ def _outcome(task_arn: str, task: Mapping) -> dict:
     exit_code = task["containers"][0].get("exitCode") if task.get("containers") else None
     if exit_code is None:
         raise TaskFailed(f"{task_arn} stopped without running: {task.get('stoppedReason')}")
+    if exit_code == EXIT_REFUSED:
+        # A warning, so the line reaches the log under the runtime's default level.
+        LOGGER.warning("Silver task %s refused its run (exit code 3); not retried", task_arn)
+        return {"task": task_arn, "exit_code": EXIT_REFUSED}
     if exit_code != 0:
         raise TaskFailed(f"{task_arn} stopped with exit code {exit_code}")
     return {"task": task_arn, "exit_code": 0}

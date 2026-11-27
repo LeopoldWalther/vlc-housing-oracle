@@ -2,10 +2,12 @@
 
 import contextlib
 import io
+import json
+import shutil
 import tempfile
 import unittest
 from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +23,7 @@ from src.enrichment.batches import BatchAnswer, BatchState
 from src.enrichment.labeler import LabelResult, TextLabel
 from src.reference.census_sections import convert
 from src.silver.ingest import ingested_runs
-from src.silver.landing import register_landing_v3
+from src.silver.landing import LandingContractError, register_landing_v3
 from src.silver.property_group import (
     PROPERTY_GROUP_SCHEMA,
     PROPERTY_GROUP_TABLE,
@@ -34,10 +36,12 @@ from src.silver.rebuild import (
     SILVER_TABLES,
     TEXT_LABEL_TABLE,
     TRANSFORMATION_VERSION,
+    BackfillRequired,
     ReferenceDataError,
     build_tables,
     local_commits,
     process_landing,
+    read_census_sections,
 )
 from src.silver.sink import write_silver_tables
 from src.synthetic.landing import generate_landing_v3
@@ -47,6 +51,24 @@ NOW = datetime(2026, 10, 20, 6, 0, tzinfo=UTC)
 
 # Every table a run writes: those of build_tables and the property groups computed in Python.
 WRITTEN_TABLES = (*SILVER_TABLES, PROPERTY_GROUP_TABLE)
+
+
+def http_error(status_code: int | None) -> duckdb.HTTPException:
+    """An HTTPException as DuckDB raises it; one built by hand carries no status code."""
+    error = duckdb.HTTPException("HTTP error on 'secret-object'")
+    if status_code is not None:
+        error.status_code = status_code
+    return error
+
+
+class FailingConnection:
+    """A connection whose every query raises the given error, as a failed read would."""
+
+    def __init__(self, error: duckdb.Error) -> None:
+        self.error = error
+
+    def execute(self, query: str, parameters: object = None) -> None:
+        raise self.error
 
 
 class TestIncrementalEqualsBackfill(unittest.TestCase):
@@ -582,6 +604,33 @@ class TestRunsGivenCensusSections(unittest.TestCase):
 
         self.assertIn("district_code", str(refused.exception))
 
+    def test_a_vintage_that_cannot_be_read_is_refused_or_propagates(self) -> None:
+        missing = str(self.root / "reference" / "no-such-vintage")
+        garbage = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (garbage / "part-0.parquet").write_bytes(b"secret garbage, not parquet")
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        remote = "s3://reference-bucket/vintage=2026-01-01"
+        refusals = {
+            "a missing local vintage": (connection, missing, "has no file"),
+            "a file of garbage bytes": (connection, str(garbage), "is not a Parquet file"),
+            "a missing remote object": (FailingConnection(http_error(404)), remote, "has no file"),
+        }
+        for case, (reader, path, defect) in refusals.items():
+            with self.subTest(case=case):
+                with self.assertRaises(ReferenceDataError) as refused:
+                    read_census_sections(reader, path)
+
+                self.assertEqual(
+                    f"census sections {path}/part-0.parquet {defect}", str(refused.exception)
+                )
+        for error in (duckdb.IOException("boom"), http_error(None)):
+            with self.subTest(propagates=type(error).__name__):
+                with self.assertRaises(type(error)) as raised:
+                    read_census_sections(FailingConnection(error), self.vintage)
+
+                self.assertIs(error, raised.exception)
+
     def test_nothing_pending_writes_no_snapshot_of_the_table(self) -> None:
         catalog = self.catalog()
         self.process(catalog, self.commits, census_sections=self.vintage)
@@ -769,6 +818,189 @@ class TestRunsGivenTextLabels(unittest.TestCase):
         self.assertEqual(0, result.pending)
         self.assertIn(TEXT_LABEL_TABLE, before)
         self.assertEqual(self.snapshots(catalog), before)
+
+
+class TestVersionGuard(unittest.TestCase):
+    """An incremental run refuses tables that another rule or redaction version wrote."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.landing = Path(cls.temporary.name) / "landing" / "v3"
+        cls.landing.mkdir(parents=True)
+        generate_landing_v3(cls.landing, seed=1)
+        cls.commits = sorted(local_commits(cls.landing), key=lambda c: (c.run_started_at, c.run_id))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temporary.cleanup()
+
+    def setUp(self) -> None:
+        warehouse = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.catalog = SqlCatalog(
+            "test", uri=f"sqlite:///{warehouse}/catalog.db", warehouse=f"file://{warehouse}"
+        )
+
+    def process(self, commits, mode="incremental"):
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        return process_landing(
+            connection,
+            self.catalog,
+            landing=str(self.landing),
+            mode=mode,
+            list_commits=lambda: list(commits),
+            now=lambda: NOW,
+        )
+
+    def snapshot_ids(self) -> dict[str, int]:
+        return {
+            identifier[-1]: self.catalog.load_table(identifier).current_snapshot().snapshot_id
+            for identifier in self.catalog.list_tables(NAMESPACE)
+        }
+
+    def test_a_run_under_another_rule_version_is_refused_and_writes_nothing(self) -> None:
+        self.process(self.commits[:-1])
+        before = self.snapshot_ids()
+
+        with (
+            mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"),
+            self.assertRaises(BackfillRequired) as refused,
+        ):
+            self.process(self.commits)
+
+        message = str(refused.exception)
+        for part in ("silver-v1", "silver-v2", "backfill"):
+            self.assertIn(part, message)
+        self.assertEqual(before, self.snapshot_ids())
+
+    def test_a_backfill_under_the_new_rule_version_clears_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            self.process(self.commits[:-1], mode="backfill")
+            result = self.process(self.commits)
+
+        self.assertEqual((self.commits[-1].run_id,), result.processed)
+
+    def test_a_backfill_that_stops_before_its_log_leaves_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            with (
+                mock.patch(
+                    "src.silver.rebuild.record_ingested", side_effect=RuntimeError("stopped")
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                self.process(self.commits[:-1], mode="backfill")
+            with self.assertRaises(BackfillRequired):
+                self.process(self.commits)
+
+    def test_a_run_under_another_redaction_version_is_refused_and_writes_nothing(self) -> None:
+        self.process(self.commits[:-1])
+        before = self.snapshot_ids()
+
+        with (
+            mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"),
+            self.assertRaises(BackfillRequired) as refused,
+        ):
+            self.process(self.commits)
+
+        message = str(refused.exception)
+        for part in ("r2", "r3", "backfill"):
+            self.assertIn(part, message)
+        self.assertEqual(before, self.snapshot_ids())
+
+    def test_listing_text_without_a_recorded_redaction_version_is_refused(self) -> None:
+        self.process(self.commits[:-1])
+        listing_text = self.catalog.load_table(f"{NAMESPACE}.listing_text")
+        listing_text.overwrite(listing_text.scan().to_arrow())
+
+        with self.assertRaises(BackfillRequired) as refused:
+            self.process(self.commits)
+
+        self.assertIn("unknown", str(refused.exception))
+
+    def test_a_backfill_under_the_new_redaction_version_clears_the_refusal(self) -> None:
+        self.process(self.commits[:-1])
+
+        with mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"):
+            self.process(self.commits[:-1], mode="backfill")
+            result = self.process(self.commits)
+
+        self.assertEqual((self.commits[-1].run_id,), result.processed)
+
+    def test_a_commit_that_does_not_name_a_day_of_its_file_is_refused_before_any_write(
+        self,
+    ) -> None:
+        landing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "v3"
+        shutil.copytree(self.landing, landing)
+        # The commit names the next day instead of its file's, so its file is still opened; a
+        # commit that names no day at all is the case of the next test.
+        target = next(c for c in self.commits if c.observed_dates["observation"])
+        (day,) = target.observed_dates["observation"]
+        path = landing / "_commits" / f"{target.run_id}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["observed_dates"]["observation"] = [(day + timedelta(days=1)).isoformat()]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        for mode in ("incremental", "backfill"):
+            with self.subTest(mode=mode):
+                connection = duckdb.connect()
+                self.addCleanup(connection.close)
+                with self.assertRaises(LandingContractError) as refused:
+                    process_landing(
+                        connection,
+                        self.catalog,
+                        landing=str(landing),
+                        mode=mode,
+                        list_commits=lambda: local_commits(landing),
+                        now=lambda: NOW,
+                    )
+
+                message = str(refused.exception)
+                for part in ("observation", target.run_id, day.isoformat()):
+                    self.assertIn(part, message)
+                self.assertEqual([], self.catalog.list_namespaces())
+
+    def test_a_file_of_a_table_whose_commit_names_no_day_is_checked(self) -> None:
+        landing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "v3"
+        shutil.copytree(self.landing, landing)
+        target = next(c for c in self.commits if c.row_counts["walk"])
+        path = landing / "_commits" / f"{target.run_id}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["observed_dates"]["walk"] = []
+        raw["row_counts"]["walk"] = 0
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+
+        with self.assertRaises(LandingContractError) as refused:
+            process_landing(
+                connection,
+                self.catalog,
+                landing=str(landing),
+                mode="incremental",
+                list_commits=lambda: local_commits(landing),
+                now=lambda: NOW,
+            )
+
+        for part in ("walk", target.run_id):
+            self.assertIn(part, str(refused.exception))
+        self.assertEqual([], self.catalog.list_namespaces())
+
+    def test_a_catalog_without_an_ingest_log_is_not_refused(self) -> None:
+        with mock.patch("src.silver.rebuild.TRANSFORMATION_VERSION", "silver-v2"):
+            result = self.process(self.commits[:1])
+
+        self.assertEqual((self.commits[0].run_id,), result.processed)
+
+    def test_a_catalog_without_listing_text_is_not_refused_for_its_redaction(self) -> None:
+        with mock.patch("src.silver.rebuild.REDACTION_VERSION", "r3"):
+            result = self.process(self.commits[:1])
+
+        self.assertEqual((self.commits[0].run_id,), result.processed)
 
 
 if __name__ == "__main__":

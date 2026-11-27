@@ -7,7 +7,7 @@ nothing is deduplicated by landing.
 """
 
 from collections.abc import Collection, Mapping
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -43,6 +43,20 @@ DETAIL_TEXT_KEY = UNIQUE_KEYS["listing_detail"]
 
 class LandingContractError(Exception):
     """Landing does not conform to the contract; no Silver table may be built from it."""
+
+
+def read_defect(error: duckdb.Error) -> str | None:
+    """What a failed read says about the file itself, or None when the read failed, not the file.
+
+    A file that is not Parquet or is missing is a defect of the input and refused; anything else
+    (a network, permission or disk failure) is an operational failure the caller re-raises.
+    """
+    if isinstance(error, duckdb.InvalidInputException):
+        return "is not a Parquet file"
+    # Only DuckDB sets status_code; an HTTPException built elsewhere carries none.
+    if isinstance(error, duckdb.HTTPException) and getattr(error, "status_code", None) == 404:
+        return "has no file"
+    return None
 
 
 def _check_columns(
@@ -127,6 +141,8 @@ def register_landing_v3(
     runs_by_table: Mapping[str, Collection[str]],
     run_started: Mapping[str, datetime],
     expected_counts: Mapping[str, Mapping[str, int]],
+    *,
+    expected_dates: Mapping[str, Mapping[str, Collection[date]]] | None = None,
 ) -> None:
     """Create ``landing_<table>`` views over the named runs, and ``landing_runs``, once checked.
 
@@ -134,15 +150,29 @@ def register_landing_v3(
     ``httpfs`` set up on the connection by the caller. ``run_started`` gives every named run's
     start, which addresses its ``run_date`` partition. ``expected_counts`` holds the commit's
     ``row_counts`` for runs not ingested yet; files of ingested runs are immutable and were counted
-    when they were first read. Messages name tables, runs and counts, never row values.
+    when they were first read. ``expected_dates`` holds the same runs' ``observed_dates``: a file
+    must hold rows of exactly the days its commit names, a null day being one it does not name.
+    Messages name tables, runs, counts and days, never another row value.
     """
+    expected_dates = expected_dates or {}
     location = location.rstrip("/")
     contract = landing_v3_columns()
     for table, columns in contract.items():
         runs = sorted(runs_by_table.get(table, ()))
+        # A pending run's file is checked even where its commit names no day, so a file holding
+        # rows its commit denies is refused instead of being silently left unread.
+        for run_id in sorted(set(runs) | set(expected_counts)):
+            dates = expected_dates.get(run_id)
+            _check_v3_file(
+                connection,
+                table,
+                run_id,
+                _v3_file(location, table, run_id, run_started),
+                columns,
+                expected_counts.get(run_id),
+                None if dates is None else dates.get(table, ()),
+            )
         files = [_v3_file(location, table, run_id, run_started) for run_id in runs]
-        for run_id, path in zip(runs, files, strict=True):
-            _check_v3_file(connection, table, run_id, path, columns, expected_counts.get(run_id))
         view = f"landing_{table}"
         if files:
             listed = ", ".join(_literal(path) for path in files)
@@ -185,20 +215,42 @@ def _check_v3_file(
     path: str,
     expected: list[tuple[str, str]],
     counts: Mapping[str, int] | None,
+    days: Collection[date] | None = None,
 ) -> None:
     if "://" not in path and not Path(path).is_file():
         raise LandingContractError(f"landing table {table}: run {run_id} has no file")
     try:
         _check_columns(connection, table, path, expected, hive_partitioning=False)
-        found = connection.sql(
-            f"SELECT count(*) FROM read_parquet({_literal(path)}, hive_partitioning = false)"
-        ).fetchone()[0]
-    except duckdb.IOException as error:
-        raise LandingContractError(f"landing table {table}: run {run_id} cannot be read") from error
+        found, held = connection.sql(
+            "SELECT count(*), list(DISTINCT coalesce(observed_date::VARCHAR, 'null')) "
+            f"FROM read_parquet({_literal(path)}, hive_partitioning = false)"
+        ).fetchone()
+    except duckdb.Error as error:
+        defect = read_defect(error)
+        if defect is None:
+            raise
+        raise LandingContractError(f"landing table {table}: run {run_id} {defect}") from error
     if counts is not None and counts.get(table) != found:
         raise LandingContractError(
             f"landing table {table}: run {run_id} commit says {counts.get(table)} rows, "
             f"its file holds {found}"
+        )
+    if days is None:
+        return
+    # A zero-row file lists no day: DuckDB's list over no rows is null.
+    held = set(held or ())
+    named = {day.isoformat() for day in days}
+    unnamed = sorted(held - named)
+    if unnamed:
+        raise LandingContractError(
+            f"landing table {table}: run {run_id} holds rows of {', '.join(unnamed)} "
+            "that its commit does not name"
+        )
+    absent = sorted(named - held)
+    if absent:
+        raise LandingContractError(
+            f"landing table {table}: run {run_id} commit names {', '.join(absent)} "
+            "that its file does not hold"
         )
 
 

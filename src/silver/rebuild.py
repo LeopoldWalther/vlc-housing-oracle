@@ -27,8 +27,8 @@ from src.enrichment.text_labels import StoredAnswerError, stored_answers
 from src.silver.affected import ListingKey, affected_listings
 from src.silver.commits import LandingCommit, days_of, parse_commit, pending, runs_for
 from src.silver.feature_patterns import LABEL_TARGETS, UNREAD, register_feature_registry
-from src.silver.ingest import ingested_runs, record_ingested
-from src.silver.landing import LandingContractError, register_landing_v3
+from src.silver.ingest import IngestedRun, ingested_runs, record_ingested
+from src.silver.landing import LandingContractError, read_defect, register_landing_v3
 from src.silver.property_group import (
     PROPERTY_GROUP_LISTING_COLUMNS,
     PROPERTY_GROUP_TABLE,
@@ -186,6 +186,52 @@ class ReferenceDataError(ValueError):
     """A reference vintage cannot be read or fails its check; the message holds no row value."""
 
 
+class BackfillRequired(Exception):
+    """Silver's tables were written by another rule or redaction version than this code's."""
+
+
+# The command's exit code for a refused run: its input or its tables are wrong, so a retry of
+# the same run would be refused again. src/silver/consumer.py holds the same value.
+EXIT_REFUSED = 3
+
+REFUSALS = (
+    LandingContractError,
+    SilverSchemaError,
+    ReferenceDataError,
+    StoredAnswerError,
+    BackfillRequired,
+)
+
+
+def require_current_versions(catalog: Catalog, ingested: Mapping[str, IngestedRun]) -> None:
+    """Refuse an incremental run over tables that another version of the rules wrote.
+
+    A run of the code's version would rewrite only the days and listings its commits touch and
+    leave the rest of history under the old version. A completed backfill rewrites every row of
+    the ingest log, so the log tells whether the rules of every table are the code's. Redacted
+    text lives in ``listing_text`` only, and every write of it records the redaction version in
+    its snapshot summary, so its current snapshot tells whether its text is the code's.
+    """
+    found = sorted({run.transformation_version for run in ingested.values()})
+    if found and found != [TRANSFORMATION_VERSION]:
+        raise BackfillRequired(
+            f"the ingest log holds transformation version {', '.join(found)}, this code is "
+            f"{TRANSFORMATION_VERSION}: run --mode backfill"
+        )
+    identifier = f"{NAMESPACE}.listing_text"
+    if not catalog.table_exists(identifier):
+        return
+    snapshot = catalog.load_table(identifier).current_snapshot()
+    if snapshot is None:
+        return
+    redaction = snapshot.summary.get("redaction_version") if snapshot.summary else None
+    if redaction != REDACTION_VERSION:
+        raise BackfillRequired(
+            f"listing_text holds redaction version {redaction or 'unknown'}, this code is "
+            f"{REDACTION_VERSION}: run --mode backfill"
+        )
+
+
 @dataclass(frozen=True)
 class ProcessResult:
     """What one incremental or backfill run did."""
@@ -225,6 +271,10 @@ def process_landing(
     from Silver's history, and the ingest log is written last: a run that stops before it leaves
     its runs pending, and repeating them gives the same rows.
 
+    An incremental run over tables that another rule or redaction version wrote raises
+    ``BackfillRequired`` before it reads landing, so it writes nothing; a backfill is the way to
+    the new version.
+
     ``census_sections`` names one reference vintage directory. A run given it also writes
     ``listing_location``; the vintage is read and checked before the run's first write, so a
     ``ReferenceDataError`` leaves every table as it was and the runs pending.
@@ -238,6 +288,8 @@ def process_landing(
     backfill = mode == "backfill"
     commits = list_commits()
     ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
+    if not backfill:
+        require_current_versions(catalog, ingested)
     todo = pending(commits, set(ingested))
     if not todo:
         return ProcessResult(0, (), {}, 0, {}, 0)
@@ -257,6 +309,7 @@ def process_landing(
         runs_for(days, known),
         run_started,
         {commit.run_id: commit.row_counts for commit in todo},
+        expected_dates={commit.run_id: commit.observed_dates for commit in todo},
     )
     tables = build_tables(connection)
     properties = _properties(todo, now)
@@ -468,6 +521,8 @@ def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa
     on every row. Anything else raises ``ReferenceDataError`` naming the path and the defect.
     """
     file = f"{path.rstrip('/')}/part-0.parquet"
+    if "://" not in file and not Path(file).is_file():
+        raise ReferenceDataError(f"census sections {file} has no file")
     # The directory is named vintage=<date>: without this the path would supply the column.
     source = "read_parquet(?, hive_partitioning = false)"
     try:
@@ -480,7 +535,10 @@ def read_census_sections(connection: duckdb.DuckDBPyConnection, path: str) -> pa
             f"SELECT {', '.join(CENSUS_SECTION_COLUMNS)} FROM {source}", [file]
         ).to_arrow_table()
     except duckdb.Error as error:
-        raise ReferenceDataError(f"census sections {file} cannot be read") from error
+        defect = read_defect(error)
+        if defect is None:
+            raise
+        raise ReferenceDataError(f"census sections {file} {defect}") from error
     if sections.num_rows == 0:
         raise ReferenceDataError(f"census sections {file} hold no row")
     vintages = pc.count_distinct(sections["vintage"], mode="all").as_py()
@@ -776,10 +834,11 @@ def s3_commits(s3_client, location: str, exclude: Collection[str]) -> list[Landi
 
 
 def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client=None) -> int:
-    """Run Silver once; exit 0 on success, 2 on usage.
+    """Run Silver once and return its exit code.
 
-    Exit 1 when landing, a table schema, the census-section vintage or a stored answer is
-    refused.
+    0: done, or nothing pending. 1: failed (an unhandled error, with Python's traceback; the
+    queue retries it). 2: usage. 3: refused (``REFUSALS``; retrying cannot help), with one
+    line on stderr naming the defect and the type of its cause, never the cause's text.
     """
     parser = argparse.ArgumentParser(
         prog="python -m src.silver.rebuild", description="Maintain Silver from landing v3."
@@ -815,19 +874,23 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
         parser.error(f"--landing {arguments.landing} is not a directory")
 
     catalog = load_catalog(arguments.catalog)
-    exclude = set() if arguments.mode == "backfill" else set(ingested_runs(catalog, NAMESPACE))
-    if on_s3:
-        if s3_client is None:
-            import boto3
-
-            s3_client = boto3.client("s3")
-        todo = s3_commits(s3_client, arguments.landing, exclude)
-    else:
-        todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in exclude]
-
-    remaining = len(todo)
+    backfill = arguments.mode == "backfill"
+    # None until the commits are listed: a refusal while listing measured nothing to publish.
+    remaining = None
     unknown_feature_patterns = None
     try:
+        ingested = {} if backfill else ingested_runs(catalog, NAMESPACE)
+        if on_s3:
+            if s3_client is None:
+                import boto3
+
+                s3_client = boto3.client("s3")
+            todo = s3_commits(s3_client, arguments.landing, set(ingested))
+        else:
+            todo = [c for c in local_commits(Path(arguments.landing)) if c.run_id not in ingested]
+        remaining = len(todo)
+        if not backfill:
+            require_current_versions(catalog, ingested)
         if not todo:
             print("nothing pending")
         else:
@@ -850,18 +913,21 @@ def main(argv: Sequence[str] | None = None, *, s3_client=None, cloudwatch_client
             remaining = 0
             unknown_feature_patterns = result.unknown_feature_patterns
             _report(result)
-    except (
-        LandingContractError,
-        SilverSchemaError,
-        ReferenceDataError,
-        StoredAnswerError,
-    ) as error:
-        print(f"Silver run refused: {error}", file=sys.stderr)
-        return 1
+    except REFUSALS as error:
+        print(f"Silver run refused: {error}{_cause(error)}", file=sys.stderr)
+        return EXIT_REFUSED
     finally:
-        if arguments.metrics:
+        if arguments.metrics and remaining is not None:
             _publish_metrics(cloudwatch_client, remaining, unknown_feature_patterns)
     return 0
+
+
+def _cause(error: Exception) -> str:
+    """The type of a refusal's cause, for the operator; its text may hold a row value."""
+    cause = error.__cause__
+    if cause is None:
+        return ""
+    return f" [cause: {type(cause).__module__}.{type(cause).__qualname__}]"
 
 
 def _read_s3_through_duckdb(connection: duckdb.DuckDBPyConnection) -> None:
